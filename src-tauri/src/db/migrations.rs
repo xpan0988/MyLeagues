@@ -24,6 +24,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "static_data_cache",
         sql: include_str!("../../migrations/0003_static_data_cache.sql"),
     },
+    Migration {
+        version: 4,
+        name: "sync_laning_timeline",
+        sql: include_str!("../../migrations/0004_sync_laning_timeline.sql"),
+    },
 ];
 
 pub fn run(connection: &mut Connection) -> AppResult<()> {
@@ -78,7 +83,7 @@ mod tests {
                 row.get(0)
             })?;
 
-        assert_eq!(applied, 3);
+        assert_eq!(applied, 4);
         Ok(())
     }
 }

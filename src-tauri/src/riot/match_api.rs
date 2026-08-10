@@ -1,6 +1,6 @@
 use crate::error::AppResult;
 use crate::riot::client::{RiotApiClient, TimedRiotResponse};
-use crate::riot::types::{MatchResponse, RegionalRoute};
+use crate::riot::types::{MatchResponse, RegionalRoute, TimelineResponse};
 
 impl RiotApiClient {
     pub async fn match_ids(
@@ -48,6 +48,21 @@ impl RiotApiClient {
             &route.host(),
             &["lol", "match", "v5", "matches", match_id],
             &format!("/lol/match/v5/matches/{match_id}"),
+            &[],
+        )
+        .await
+    }
+
+    pub async fn match_timeline(
+        &self,
+        route: &RegionalRoute,
+        match_id: &str,
+    ) -> AppResult<TimelineResponse> {
+        self.get(
+            "match-v5",
+            &route.host(),
+            &["lol", "match", "v5", "matches", match_id, "timeline"],
+            &format!("/lol/match/v5/matches/{match_id}/timeline"),
             &[],
         )
         .await

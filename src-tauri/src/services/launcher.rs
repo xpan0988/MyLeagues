@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(target_os = "windows")]
+use std::path::Path;
 use std::process::Command;
 
 #[cfg(windows)]
@@ -9,6 +11,7 @@ use crate::db::repositories::settings::SettingsRepository;
 use crate::dto::analytics::ClientStateDto;
 use crate::error::{AppError, AppResult};
 
+#[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub struct LauncherService<'state> {
@@ -63,6 +66,7 @@ fn find_executable(configured: Option<&str>) -> Option<PathBuf> {
         .or_else(|| common_paths().into_iter().find(|path| path.is_file()))
 }
 
+#[cfg(target_os = "windows")]
 fn common_paths() -> Vec<PathBuf> {
     let mut paths = vec![PathBuf::from(
         r"C:\Riot Games\Riot Client\RiotClientServices.exe",
@@ -80,6 +84,15 @@ fn common_paths() -> Vec<PathBuf> {
     paths
 }
 
+#[cfg(target_os = "macos")]
+fn common_paths() -> Vec<PathBuf> {
+    vec![PathBuf::from("/Applications/Riot Client.app/Contents/MacOS/RiotClientServices")]
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn common_paths() -> Vec<PathBuf> { Vec::new() }
+
+#[cfg(target_os = "windows")]
 fn running_processes() -> AppResult<Vec<String>> {
     let mut command = Command::new("tasklist.exe");
     command.args(["/FO", "CSV", "/NH"]);
@@ -100,6 +113,13 @@ fn running_processes() -> AppResult<Vec<String>> {
                 .map(|name| name.to_ascii_lowercase())
         })
         .collect())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn running_processes() -> AppResult<Vec<String>> {
+    // This product does not use client internals. On non-Windows builds we do
+    // not invoke Windows tasklist.exe; configured client launching still works.
+    Ok(Vec::new())
 }
 
 fn state_from_processes(processes: &[String], executable_found: bool) -> ClientStateDto {

@@ -21,7 +21,7 @@ export function ChampionsPage() {
 }
 
 function ChampionRow({ row }: { row: ChampionSummaryDto }) {
-  return <Link className="champion-row" to={`/champions/${row.champion.id}`}><div className="champion-identity"><EntityIcon entity={row.champion} size={52} /><span><strong>{row.champion.name}</strong><small>MASTERY {row.masteryPoints?.toLocaleString() ?? "—"} · LEVEL {row.masteryLevel ?? "—"}</small></span></div><div><small>TRACKED GAMES</small><b>{row.trackedGames}</b></div><div><small>WIN RATE</small><b>{row.winRate.toFixed(1)}%</b></div><div><small>KILLS</small><b>{row.kills.toLocaleString()}</b></div><div><small>PLAYTIME</small><b>{formatDuration(row.playtimeSeconds)}</b></div><div className="build-preview">{row.mostUsedCoreBuild?.items.map((item) => <EntityIcon key={item.id} entity={item} size={32} />) ?? <small>NO CORE BUILD</small>}</div></Link>;
+  return <Link className="champion-row" to={`/champions/${row.champion.id}`}><div className="champion-identity"><EntityIcon entity={row.champion} size={52} /><span><strong>{row.champion.name}</strong><small>MASTERY {row.masteryPoints?.toLocaleString() ?? "—"} · LEVEL {row.masteryLevel ?? "—"}</small></span></div><div><small>TRACKED GAMES</small><b>{row.trackedGames}</b></div><div><small>WIN RATE</small><b>{row.winRate.toFixed(1)}%</b></div><div><small>KILLS</small><b>{row.kills.toLocaleString()}</b></div><div><small>PLAYTIME</small><b>{formatDuration(row.playtimeSeconds)}</b></div><div className="build-preview">{row.mostUsedCoreBuild?.items.slice(0, 3).map((item) => <EntityIcon key={item.id} entity={item} size={32} />) ?? <small>NO CORE BUILD</small>}</div></Link>;
 }
 
 function sortValue(row: ChampionSummaryDto, key: SortKey) {

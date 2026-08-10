@@ -136,6 +136,7 @@ fn parse_participant(match_id: String, participant: &ParticipantResponse) -> Pla
     PlayerMatch {
         match_id,
         puuid: participant.puuid.clone(),
+        participant_id: participant.participant_id,
         champion_id: participant.champion_id,
         win: participant.win,
         kills: participant.kills,

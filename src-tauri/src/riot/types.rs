@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use crate::error::{AppError, AppResult};
 
@@ -177,6 +178,8 @@ pub struct MatchInfoResponse {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParticipantResponse {
+    #[serde(default)]
+    pub participant_id: Option<i64>,
     pub puuid: String,
     pub champion_id: i64,
     pub win: bool,
@@ -200,6 +203,70 @@ pub struct ParticipantResponse {
     pub item5: i64,
     pub item6: i64,
     pub perks: PerksResponse,
+}
+
+/// Match-V5 timeline payload. We intentionally deserialize only compact facts
+/// needed for laning analytics; events and unneeded frame fields are ignored.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineResponse {
+    pub metadata: TimelineMetadataResponse,
+    pub info: TimelineInfoResponse,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineMetadataResponse {
+    pub participants: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineInfoResponse {
+    pub frame_interval: i64,
+    pub frames: Vec<TimelineFrameResponse>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineFrameResponse {
+    pub timestamp: i64,
+    #[serde(default)]
+    pub participant_frames: HashMap<String, TimelineParticipantFrameResponse>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineParticipantFrameResponse {
+    pub total_gold: i64,
+    pub xp: i64,
+    pub level: i64,
+    pub minions_killed: i64,
+    pub jungle_minions_killed: i64,
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::TimelineResponse;
+
+    #[test]
+    fn deserializes_current_match_v5_timeline_frame_shape() {
+        let value: TimelineResponse = serde_json::from_str(
+            r#"{
+                "metadata":{"participants":["local-puuid"]},
+                "info":{"frameInterval":60000,"frames":[{
+                    "timestamp":600000,
+                    "participantFrames":{"1":{"totalGold":4123,"xp":5040,"level":6,"minionsKilled":71,"jungleMinionsKilled":3}},
+                    "events":[]
+                }]}
+            }"#,
+        )
+        .unwrap();
+        let frame = &value.info.frames[0];
+        let player = &frame.participant_frames["1"];
+        assert_eq!((value.info.frame_interval, frame.timestamp), (60_000, 600_000));
+        assert_eq!((player.total_gold, player.xp, player.level, player.minions_killed, player.jungle_minions_killed), (4123, 5040, 6, 71, 3));
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

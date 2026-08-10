@@ -17,6 +17,7 @@ pub struct MatchRecord {
 pub struct PlayerMatch {
     pub match_id: String,
     pub puuid: String,
+    pub participant_id: Option<i64>,
     pub champion_id: i64,
     pub win: bool,
     pub kills: i64,

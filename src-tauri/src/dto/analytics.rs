@@ -89,9 +89,12 @@ pub struct ClientStateDto {
 #[serde(rename_all = "camelCase")]
 pub struct SyncStateDto {
     pub status: String,
+    pub currently_running: bool,
+    pub trigger: Option<String>,
     pub completed: u64,
     pub total: Option<u64>,
     pub message: Option<String>,
+    pub last_check_at: Option<String>,
     pub last_successful_sync_at: Option<String>,
 }
 
@@ -204,11 +207,24 @@ pub struct ChampionProfileDto {
     pub filter_context: ResolvedFilterDto,
     pub overview: TrackedOverviewDto,
     pub performance: PerformanceDto,
+    pub laning_at_ten: LaningAtTenDto,
     pub core_builds: Vec<CoreBuildStatsDto>,
     pub boots: Vec<EntityUsageDto>,
     pub rune_pages: Vec<RunePageStatsDto>,
     pub keystone_usage: Vec<EntityUsageDto>,
     pub summoner_spell_pairs: Vec<SpellPairStatsDto>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaningAtTenDto {
+    pub eligible_games: u64,
+    pub covered_games: u64,
+    pub average_cs_at_ten: Option<f64>,
+    pub average_cs_per_minute_at_ten: Option<f64>,
+    pub average_gold_at_ten: Option<f64>,
+    pub average_xp_at_ten: Option<f64>,
+    pub average_level_at_ten: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -352,10 +368,21 @@ pub struct HomeDto {
     pub rank: Option<RankDto>,
     pub client_state: ClientStateDto,
     pub sync_state: SyncStateDto,
+    pub historical_sync: HistoricalSyncDto,
     pub tracked_career: TrackedOverviewDto,
     pub ranked_games: u64,
     pub recent_form: Vec<bool>,
     pub top_champions: Vec<ChampionSummaryDto>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoricalSyncDto {
+    pub matches_tracked: u64,
+    pub oldest_tracked_at: Option<String>,
+    pub tracked_playtime_seconds: u64,
+    pub history_status: String,
+    pub next_match_start: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]

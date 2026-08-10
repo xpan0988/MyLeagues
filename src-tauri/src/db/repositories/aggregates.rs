@@ -45,7 +45,7 @@ impl AggregateRepository {
                         pm.double_kills, pm.triple_kills, pm.quadra_kills, pm.penta_kills,
                         pm.total_minions_killed, pm.neutral_minions_killed, pm.gold_earned,
                         pm.summoner1_id, pm.summoner2_id, pm.keystone_id,
-                        pm.primary_style_id, pm.secondary_style_id
+                        pm.primary_style_id, pm.secondary_style_id, pm.participant_id
                  FROM matches m JOIN player_matches pm ON pm.match_id = m.match_id
                  ORDER BY m.match_id, pm.puuid",
             )?;
@@ -80,6 +80,7 @@ impl AggregateRepository {
                         keystone_id: row.get(23)?,
                         primary_style_id: row.get(24)?,
                         secondary_style_id: row.get(25)?,
+                        participant_id: row.get(26)?,
                         final_items: Vec::new(),
                         rune_selections: Vec::new(),
                     },

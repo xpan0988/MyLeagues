@@ -16,6 +16,7 @@ use db::repositories::settings::SettingsRepository;
 use riot::client::RiotApiClient;
 use riot::ddragon::DataDragonClient;
 use services::sync::SyncCoordinator;
+use services::timeline::TimelineCoordinator;
 use tauri::Manager;
 
 pub struct AppState {
@@ -23,6 +24,7 @@ pub struct AppState {
     config: BackendConfig,
     riot: Option<Arc<RiotApiClient>>,
     sync: Arc<SyncCoordinator>,
+    timeline: Arc<TimelineCoordinator>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -52,6 +54,7 @@ pub fn run() {
             };
             let database = Arc::new(database);
             let sync = Arc::new(SyncCoordinator::new());
+            let timeline = Arc::new(TimelineCoordinator::new());
             let data_dragon = DataDragonClient::new()?;
 
             tracing::info!(
@@ -65,14 +68,16 @@ pub fn run() {
                 config,
                 riot: riot.clone(),
                 sync: Arc::clone(&sync),
+                timeline: Arc::clone(&timeline),
             });
             if should_auto_sync {
                 if let Some(riot) = riot {
                     let app_handle = app.handle().clone();
                     let sync_database = Arc::clone(&database);
                     let background_sync = Arc::clone(&sync);
+                    let background_timeline = Arc::clone(&timeline);
                     tauri::async_runtime::spawn(async move {
-                        services::sync::start_background(sync_database, riot, background_sync, app_handle).await;
+                        services::sync::start_background(sync_database, riot, background_sync, background_timeline, app_handle, services::sync::SyncTrigger::Startup).await;
                     });
                 }
             }
@@ -96,9 +101,11 @@ pub fn run() {
             commands::launcher::get_client_state,
             commands::launcher::launch_client,
             commands::sync::start_sync,
+            commands::sync::request_freshness_check,
             commands::sync::get_sync_state,
             commands::maintenance::rebuild_aggregates,
             commands::maintenance::clear_static_cache,
+            commands::maintenance::reset_local_archive,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run the MyLeague desktop application");

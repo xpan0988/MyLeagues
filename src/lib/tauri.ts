@@ -41,9 +41,13 @@ export const backend = {
   getClientState: () => invoke<ClientStateDto>("get_client_state"),
   launchClient: () => invoke<ClientStateDto>("launch_client"),
   startSync: () => invoke<SyncStateDto>("start_sync"),
+  requestFreshnessCheck: (trigger: "periodic" | "resume") => invoke<SyncStateDto>("request_freshness_check", { trigger }),
   getSyncState: () => invoke<SyncStateDto>("get_sync_state"),
   rebuildAggregates: () => invoke<void>("rebuild_aggregates"),
   clearStaticCache: () => invoke<void>("clear_static_cache"),
+  resetLocalArchive: () => invoke<void>("reset_local_archive"),
   onSyncStateChanged: (handler: (state: SyncStateDto) => void): Promise<UnlistenFn> =>
     listen<SyncStateDto>("sync-state-changed", (event) => handler(event.payload)),
+  onTimelineFactsChanged: (handler: () => void): Promise<UnlistenFn> =>
+    listen("timeline-facts-changed", () => handler()),
 } as const;

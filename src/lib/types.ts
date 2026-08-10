@@ -10,7 +10,7 @@ export interface AnalyticsFilter {
   timeRange: TimeRangeFilter;
 }
 
-export type SyncStatus = "idle" | "syncing" | "success" | "error";
+export type SyncStatus = "idle" | "checking" | "syncing" | "success" | "error";
 
 export interface AccountDto {
   puuid: string;
@@ -29,9 +29,12 @@ export interface ClientStateDto {
 
 export interface SyncStateDto {
   status: SyncStatus;
+  currentlyRunning: boolean;
+  trigger: string | null;
   completed: number;
   total: number | null;
   message: string | null;
+  lastCheckAt: string | null;
   lastSuccessfulSyncAt: string | null;
 }
 
@@ -108,6 +111,15 @@ export interface ChampionProfileDto {
     tripleKills: number;
     quadraKills: number;
     pentaKills: number;
+  };
+  laningAtTen: {
+    eligibleGames: number;
+    coveredGames: number;
+    averageCsAtTen: number | null;
+    averageCsPerMinuteAtTen: number | null;
+    averageGoldAtTen: number | null;
+    averageXpAtTen: number | null;
+    averageLevelAtTen: number | null;
   };
   coreBuilds: Array<{
     items: GameEntityDto[];
@@ -196,6 +208,13 @@ export interface HomeDto {
   rank: { tier: string; division: string; leaguePoints: number; wins: number; losses: number; winRate: number } | null;
   clientState: ClientStateDto;
   syncState: SyncStateDto;
+  historicalSync: {
+    matchesTracked: number;
+    oldestTrackedAt: string | null;
+    trackedPlaytimeSeconds: number;
+    historyStatus: "Complete" | "Still backfilling" | "Interrupted" | "Not configured";
+    nextMatchStart: number;
+  };
   trackedCareer: TrackedOverviewDto;
   rankedGames: number;
   recentForm: boolean[];

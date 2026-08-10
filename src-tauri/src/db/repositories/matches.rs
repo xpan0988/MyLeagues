@@ -115,7 +115,7 @@ impl MatchRepository {
                     pm.double_kills, pm.triple_kills, pm.quadra_kills, pm.penta_kills,
                     pm.total_minions_killed, pm.neutral_minions_killed, pm.gold_earned,
                     pm.summoner1_id, pm.summoner2_id, pm.keystone_id,
-                    pm.primary_style_id, pm.secondary_style_id
+                    pm.primary_style_id, pm.secondary_style_id, pm.participant_id
              FROM matches m JOIN player_matches pm ON pm.match_id = m.match_id
              WHERE m.match_id = ?1 AND pm.puuid = ?2",
                 params![match_id, puuid],
@@ -150,6 +150,7 @@ impl MatchRepository {
                             keystone_id: row.get(22)?,
                             primary_style_id: row.get(23)?,
                             secondary_style_id: row.get(24)?,
+                            participant_id: row.get(25)?,
                             final_items: Vec::new(),
                             rune_selections: Vec::new(),
                         },
@@ -285,10 +286,10 @@ fn ingest_facts(
                 match_id, puuid, champion_id, win, kills, deaths, assists,
                 double_kills, triple_kills, quadra_kills, penta_kills,
                 total_minions_killed, neutral_minions_killed, gold_earned,
-                summoner1_id, summoner2_id, keystone_id, primary_style_id, secondary_style_id
+                summoner1_id, summoner2_id, keystone_id, primary_style_id, secondary_style_id, participant_id
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                ?15, ?16, ?17, ?18, ?19
+                ?15, ?16, ?17, ?18, ?19, ?20
              )",
         params![
             player.match_id,
@@ -310,6 +311,7 @@ fn ingest_facts(
             player.keystone_id,
             player.primary_style_id,
             player.secondary_style_id,
+            player.participant_id,
         ],
     )?;
 
@@ -392,6 +394,7 @@ mod tests {
         PlayerMatch {
             match_id: id.to_owned(),
             puuid: "test-puuid".to_owned(),
+            participant_id: Some(1),
             champion_id,
             win: true,
             kills,

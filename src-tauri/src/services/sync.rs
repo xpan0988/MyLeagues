@@ -11,16 +11,42 @@ use crate::db::repositories::matches::MatchRepository;
 use crate::db::repositories::profile::ProfileRepository;
 use crate::db::repositories::settings::SettingsRepository;
 use crate::db::repositories::sync::SyncRepository;
+use crate::db::repositories::timeline::TimelineRepository;
 use crate::domain::account::Account;
 use crate::dto::analytics::SyncStateDto;
 use crate::error::{AppError, AppResult};
 use crate::riot::client::RiotApiClient;
 use crate::riot::parser::parse_match;
 use crate::riot::types::{PlatformRoute, RegionalRoute};
+use crate::services::timeline::{self, TimelineCoordinator};
 
 const MATCH_PAGE_SIZE: u32 = 100;
 const MATCH_FETCH_CONCURRENCY: usize = 5;
 const PROGRESS_EVENT_INTERVAL: Duration = Duration::from_millis(500);
+pub const FRESHNESS_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncTrigger {
+    Startup,
+    SettingsSaved,
+    Periodic,
+    Resume,
+    Manual,
+    ArchiveReset,
+}
+
+impl SyncTrigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Startup => "startup",
+            Self::SettingsSaved => "settings_saved",
+            Self::Periodic => "periodic",
+            Self::Resume => "resume",
+            Self::Manual => "manual",
+            Self::ArchiveReset => "archive_reset",
+        }
+    }
+}
 
 pub struct SyncCoordinator {
     state: Mutex<SyncStateDto>,
@@ -32,22 +58,27 @@ impl SyncCoordinator {
         Self {
             state: Mutex::new(SyncStateDto {
                 status: "idle".to_owned(),
+                currently_running: false,
+                trigger: None,
                 completed: 0,
                 total: None,
                 message: None,
+                last_check_at: None,
                 last_successful_sync_at: None,
             }),
             last_progress_emit: Mutex::new(None),
         }
     }
 
-    pub async fn begin(&self) -> bool {
+    pub async fn begin(&self, trigger: SyncTrigger) -> bool {
         let mut state = self.state.lock().await;
-        if state.status == "syncing" {
+        if state.currently_running {
             return false;
         }
-        state.status = "syncing".to_owned();
-        state.message = Some("Resolving account".to_owned());
+        state.status = "checking".to_owned();
+        state.currently_running = true;
+        state.trigger = Some(trigger.as_str().to_owned());
+        state.message = Some("Checking local archive freshness".to_owned());
         state.completed = 0;
         state.total = None;
         true
@@ -55,6 +86,20 @@ impl SyncCoordinator {
 
     pub async fn snapshot(&self) -> SyncStateDto {
         self.state.lock().await.clone()
+    }
+
+    pub async fn is_running(&self) -> bool {
+        self.state.lock().await.currently_running
+    }
+
+    async fn syncing(&self, app: &AppHandle) {
+        let snapshot = {
+            let mut state = self.state.lock().await;
+            state.status = "syncing".to_owned();
+            state.message = Some("Syncing match history".to_owned());
+            state.clone()
+        };
+        let _ = app.emit("sync-state-changed", snapshot);
     }
 
     async fn progress(
@@ -88,22 +133,31 @@ impl SyncCoordinator {
     }
 
     pub async fn finish(&self, app: &AppHandle, result: &AppResult<()>) {
-        let snapshot = {
+        let snapshot = self.complete(result).await;
+        let _ = app.emit("sync-state-changed", snapshot);
+    }
+
+    async fn complete(&self, result: &AppResult<()>) -> SyncStateDto {
+        {
             let mut state = self.state.lock().await;
             match result {
                 Ok(()) => {
                     state.status = "success".to_owned();
+                    state.currently_running = false;
                     state.message = Some("Local archive is up to date".to_owned());
-                    state.last_successful_sync_at = Some(chrono::Utc::now().to_rfc3339());
+                    let now = chrono::Utc::now().to_rfc3339();
+                    state.last_check_at = Some(now.clone());
+                    state.last_successful_sync_at = Some(now);
                 }
                 Err(error) => {
                     state.status = "error".to_owned();
+                    state.currently_running = false;
                     state.message = Some(error.to_string());
+                    state.last_check_at = Some(chrono::Utc::now().to_rfc3339());
                 }
             }
             state.clone()
-        };
-        let _ = app.emit("sync-state-changed", snapshot);
+        }
     }
 }
 
@@ -111,19 +165,70 @@ pub async fn start_background(
     database: Arc<Database>,
     riot: Arc<RiotApiClient>,
     coordinator: Arc<SyncCoordinator>,
+    timeline_coordinator: Arc<TimelineCoordinator>,
     app: AppHandle,
+    trigger: SyncTrigger,
 ) -> SyncStateDto {
-    if coordinator.begin().await {
+    if coordinator.begin(trigger).await {
+        tracing::info!(target: "sync", trigger = trigger.as_str(), "starting synchronization attempt");
+        let checking = coordinator.snapshot().await;
+        let _ = app.emit("sync-state-changed", checking);
         let task_coordinator = Arc::clone(&coordinator);
         tauri::async_runtime::spawn(async move {
-            let result = run(database, riot, Arc::clone(&task_coordinator), app.clone()).await;
+            let result = run(Arc::clone(&database), Arc::clone(&riot), Arc::clone(&task_coordinator), app.clone(), trigger).await;
             task_coordinator.finish(&app, &result).await;
+            if result.is_ok() {
+                let candidate = (|| -> AppResult<(String, RegionalRoute)> {
+                    let connection = database.connection()?;
+                    let account = AccountRepository::new(&connection).get()?.ok_or_else(|| AppError::Configuration("configured account disappeared during synchronization".to_owned()))?;
+                    Ok((account.puuid, PlatformRoute::parse(&account.platform_region)?.match_route()))
+                })();
+                if let Ok((puuid, route)) = candidate {
+                    timeline::start_background(database, riot, task_coordinator.clone(), timeline_coordinator, app.clone(), puuid, route).await;
+                }
+            }
             if let Err(error) = result {
                 tracing::error!(error = %error, "background synchronization failed");
             }
         });
-    }
+    } else { tracing::info!(target: "sync", trigger = trigger.as_str(), "coalesced synchronization attempt because a worker is already running"); }
     coordinator.snapshot().await
+}
+
+pub async fn start_if_stale(
+    database: Arc<Database>,
+    riot: Arc<RiotApiClient>,
+    coordinator: Arc<SyncCoordinator>,
+    timeline_coordinator: Arc<TimelineCoordinator>,
+    app: AppHandle,
+    trigger: SyncTrigger,
+) -> AppResult<SyncStateDto> {
+    if coordinator.is_running().await { return Ok(coordinator.snapshot().await); }
+    let should_start = {
+        let connection = database.connection()?;
+        let settings = SettingsRepository::new(&connection).get()?;
+        if settings.game_name.is_empty() || settings.tag_line.is_empty() {
+            false
+        } else if let Some(account) = AccountRepository::new(&connection).get()? {
+            SyncRepository::ensure(&connection, &account.puuid)?;
+            SyncRepository::get(&connection, &account.puuid)?.last_check_at
+                .as_deref().map(is_stale).unwrap_or(true)
+        } else {
+            true
+        }
+    };
+    Ok(if should_start {
+        start_background(database, riot, coordinator, timeline_coordinator, app, trigger).await
+    } else {
+        coordinator.snapshot().await
+    })
+}
+
+fn is_stale(value: &str) -> bool {
+    let parsed = chrono::DateTime::parse_from_rfc3339(value)
+        .map(|date| date.with_timezone(&chrono::Utc))
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").map(|date| date.and_utc()));
+    parsed.map(|date| chrono::Utc::now().signed_duration_since(date).to_std().map(|age| age >= FRESHNESS_INTERVAL).unwrap_or(true)).unwrap_or(true)
 }
 
 pub async fn run(
@@ -131,6 +236,7 @@ pub async fn run(
     riot: Arc<RiotApiClient>,
     coordinator: Arc<SyncCoordinator>,
     app: AppHandle,
+    trigger: SyncTrigger,
 ) -> AppResult<()> {
     let settings = {
         let connection = database.connection()?;
@@ -170,8 +276,9 @@ pub async fn run(
         AccountRepository::new(&connection).upsert(&account)?;
         SyncRepository::ensure(&connection, &account.puuid)?;
         SyncRepository::resume_interrupted(&connection, &account.puuid)?;
-        SyncRepository::set_status(&connection, &account.puuid, "syncing", None)?;
+        SyncRepository::begin_attempt(&connection, &account.puuid, trigger.as_str())?;
     }
+    coordinator.syncing(&app).await;
 
     let sync_result = synchronize_matches(
         &database,
@@ -202,7 +309,8 @@ pub async fn run(
         let mut connection = database.connection()?;
         ProfileRepository::replace_mastery(&mut connection, &account.puuid, &masteries)?;
         ProfileRepository::add_rank_snapshots(&mut connection, &account.puuid, &league_entries)?;
-        SyncRepository::set_status(&connection, &account.puuid, "success", None)?;
+        SyncRepository::mark_success(&connection, &account.puuid)?;
+        TimelineRepository::enqueue_eligible(&connection, &account.puuid)?;
     }
     Ok(())
 }
@@ -451,7 +559,8 @@ fn should_emit_progress(last: Option<Instant>, now: Instant, force: bool) -> boo
 
 #[cfg(test)]
 mod progress_tests {
-    use super::should_emit_progress;
+    use super::{SyncCoordinator, SyncTrigger, is_stale, should_emit_progress};
+    use crate::error::{AppError, AppResult};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -468,5 +577,48 @@ mod progress_tests {
             start + Duration::from_millis(100),
             true
         ));
+    }
+
+    #[test]
+    fn every_automatic_and_manual_source_has_a_non_secret_diagnostic_trigger() {
+        assert_eq!(
+            [SyncTrigger::Startup, SyncTrigger::SettingsSaved, SyncTrigger::Periodic,
+                SyncTrigger::Resume, SyncTrigger::Manual, SyncTrigger::ArchiveReset]
+                .map(SyncTrigger::as_str),
+            ["startup", "settings_saved", "periodic", "resume", "manual", "archive_reset"],
+        );
+    }
+
+    #[tokio::test]
+    async fn coordinator_coalesces_overlapping_sync_requests() {
+        let coordinator = SyncCoordinator::new();
+        assert!(coordinator.begin(SyncTrigger::Startup).await);
+        assert!(!coordinator.begin(SyncTrigger::Manual).await);
+        let state = coordinator.snapshot().await;
+        assert!(state.currently_running);
+        assert_eq!(state.status, "checking");
+        assert_eq!(state.trigger.as_deref(), Some("startup"));
+    }
+
+    #[tokio::test]
+    async fn failed_startup_transitions_to_error_and_a_later_automatic_check_recovers() {
+        let coordinator = SyncCoordinator::new();
+        assert!(coordinator.begin(SyncTrigger::Startup).await);
+        let failed: AppResult<()> = Err(AppError::Configuration("temporary failure".into()));
+        let error = coordinator.complete(&failed).await;
+        assert_eq!(error.status, "error");
+        assert!(!error.currently_running);
+        assert!(coordinator.begin(SyncTrigger::Periodic).await);
+        let succeeded: AppResult<()> = Ok(());
+        let success = coordinator.complete(&succeeded).await;
+        assert_eq!(success.status, "success");
+        assert!(!success.currently_running);
+        assert!(success.last_successful_sync_at.is_some());
+    }
+
+    #[test]
+    fn stale_checks_allow_a_failed_startup_to_be_retried_later() {
+        assert!(is_stale("2000-01-01 00:00:00"));
+        assert!(!is_stale(&chrono::Utc::now().to_rfc3339()));
     }
 }

@@ -6,3 +6,4 @@ pub mod settings;
 pub mod static_data;
 pub mod statistics;
 pub mod sync;
+pub mod timeline;

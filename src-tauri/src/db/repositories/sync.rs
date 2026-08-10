@@ -6,6 +6,10 @@ use crate::error::AppResult;
 pub struct PersistedSyncState {
     pub next_match_start: u32,
     pub initial_sync_complete: bool,
+    pub last_check_at: Option<String>,
+    pub last_successful_sync_at: Option<String>,
+    pub last_error: Option<String>,
+    pub last_trigger: Option<String>,
 }
 
 pub struct SyncRepository;
@@ -21,12 +25,18 @@ impl SyncRepository {
 
     pub fn get(connection: &Connection, puuid: &str) -> AppResult<PersistedSyncState> {
         let state = connection.query_row(
-            "SELECT next_match_start, initial_sync_complete FROM sync_state WHERE puuid = ?1",
+            "SELECT next_match_start, initial_sync_complete, last_check_at,
+                    last_successful_sync_at, last_error, last_trigger
+             FROM sync_state WHERE puuid = ?1",
             [puuid],
             |row| {
                 Ok(PersistedSyncState {
                     next_match_start: row.get(0)?,
                     initial_sync_complete: row.get(1)?,
+                    last_check_at: row.get(2)?,
+                    last_successful_sync_at: row.get(3)?,
+                    last_error: row.get(4)?,
+                    last_trigger: row.get(5)?,
                 })
             },
         )?;
@@ -43,6 +53,25 @@ impl SyncRepository {
             "UPDATE sync_state SET status = ?2, last_error = ?3, updated_at = CURRENT_TIMESTAMP
              WHERE puuid = ?1",
             params![puuid, status, error],
+        )?;
+        Ok(())
+    }
+
+    pub fn begin_attempt(connection: &Connection, puuid: &str, trigger: &str) -> AppResult<()> {
+        connection.execute(
+            "UPDATE sync_state SET status = 'syncing', last_error = NULL,
+             last_check_at = CURRENT_TIMESTAMP, last_trigger = ?2, updated_at = CURRENT_TIMESTAMP
+             WHERE puuid = ?1",
+            params![puuid, trigger],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_success(connection: &Connection, puuid: &str) -> AppResult<()> {
+        connection.execute(
+            "UPDATE sync_state SET status = 'success', last_error = NULL,
+             last_successful_sync_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE puuid = ?1",
+            [puuid],
         )?;
         Ok(())
     }

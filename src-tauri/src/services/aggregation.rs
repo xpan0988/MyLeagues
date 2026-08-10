@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::{Datelike, TimeZone, Utc};
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, params};
 
 use crate::db::Database;
 use crate::db::repositories::account::AccountRepository;
@@ -21,7 +21,7 @@ use crate::domain::stats::{
 use crate::dto::analytics::{
     AccountDto, AnalyticsFilterDto, CareerDto, CareerQueuesDto, ChampionMasteryDto,
     ChampionProfileDto, ChampionSummaryDto, ClientStateDto, CoreBuildDto, CoreBuildStatsDto,
-    EntityUsageDto, HomeDto, MatchDetailDto, MatchItemDto, MatchQueryDto, MatchSummaryDto, PageDto,
+    EntityUsageDto, HistoricalSyncDto, HomeDto, LaningAtTenDto, MatchDetailDto, MatchItemDto, MatchQueryDto, MatchSummaryDto, PageDto,
     PerformanceDto, PreferenceDto, RankDto, ResolvedFilterDto, RunePageDto, RunePageStatsDto,
     SpellPairStatsDto, SyncStateDto, TrackedOverviewDto,
 };
@@ -45,7 +45,7 @@ impl<'state> AggregationService<'state> {
         };
         let recent = select(&samples, filter, None, Some(20));
 
-        let (overview, ranked_games, top_champions, rank, sync_state, configured_executable_found) = {
+        let (overview, ranked_games, top_champions, rank, sync_state, historical_sync, configured_executable_found) = {
             let connection = self.database.connection()?;
             let Some(account_ref) = account.as_ref() else {
                 return Ok(empty_home(configured_client_path(&connection)?));
@@ -84,14 +84,15 @@ impl<'state> AggregationService<'state> {
             .collect();
             let sync_state = if let Some(account) = &account {
                 connection.query_row(
-                    "SELECT status, last_error, last_successful_sync_at FROM sync_state WHERE puuid = ?1",
+                    "SELECT status, last_error, last_successful_sync_at, last_check_at, last_trigger FROM sync_state WHERE puuid = ?1",
                     [&account.puuid],
-                    |row| Ok(SyncStateDto { status: row.get(0)?, completed: 0, total: None,
-                        message: row.get(1)?, last_successful_sync_at: row.get(2)? }),
+                    |row| Ok(SyncStateDto { status: row.get(0)?, currently_running: false, trigger: row.get(4)?, completed: 0, total: None,
+                        message: row.get(1)?, last_successful_sync_at: row.get(2)?, last_check_at: row.get(3)? }),
                 ).unwrap_or_else(|_| idle_sync())
             } else {
                 idle_sync()
             };
+            let historical_sync = historical_sync_diagnostics(&connection, &account_ref.puuid)?;
             let rank = connection
                 .query_row(
                     "SELECT tier, rank_division, league_points, wins, losses
@@ -120,6 +121,7 @@ impl<'state> AggregationService<'state> {
                 top_champions,
                 rank,
                 sync_state,
+                historical_sync,
                 configured,
             )
         };
@@ -134,6 +136,7 @@ impl<'state> AggregationService<'state> {
                 configured_executable_found,
             },
             sync_state,
+            historical_sync,
             tracked_career: counters_overview_dto(&overview),
             ranked_games,
             recent_form: recent.iter().map(|sample| sample.win).collect(),
@@ -163,7 +166,7 @@ impl<'state> AggregationService<'state> {
         filter: AnalyticsFilter,
     ) -> AppResult<ChampionProfileDto> {
         let (_, samples, mastery, catalog) = self.load()?;
-        let (counters, resolved) = {
+        let (counters, resolved, laning_at_ten) = {
             let connection = self.database.connection()?;
             let resolved = FilterResolver::resolve(&connection, filter)?;
             match AccountRepository::new(&connection).get()? {
@@ -174,9 +177,10 @@ impl<'state> AggregationService<'state> {
                         champion_id,
                         &resolved.aggregate_scope,
                     )?;
-                    (counters, resolved)
+                    let laning = laning_at_ten(&connection, &account.puuid, champion_id, &resolved.aggregate_scope)?;
+                    (counters, resolved, laning)
                 }
-                None => (AggregateCounters::default(), resolved),
+                None => (AggregateCounters::default(), resolved, LaningAtTenDto::default()),
             }
         };
         let selected = select_resolved(&samples, &resolved, Some(champion_id), None);
@@ -190,6 +194,7 @@ impl<'state> AggregationService<'state> {
             filter_context: resolved_filter_dto(&resolved),
             overview: counters_overview_dto(&counters),
             performance: counters_performance_dto(&counters),
+            laning_at_ten,
             core_builds: core_build_usage(&selected)
                 .into_iter()
                 .map(|usage| core_build_stats_dto(usage, &catalog))
@@ -616,6 +621,97 @@ fn counters_performance_dto(counters: &AggregateCounters) -> PerformanceDto {
     }
 }
 
+fn laning_at_ten(
+    connection: &rusqlite::Connection,
+    puuid: &str,
+    champion_id: i64,
+    scope: &crate::domain::aggregates::AggregateScope,
+) -> AppResult<LaningAtTenDto> {
+    connection.query_row(
+        "SELECT COUNT(m.match_id), COUNT(snapshot.match_id),
+                AVG(snapshot.lane_minions * 1.0), AVG(snapshot.lane_minions * 1.0 / 10.0),
+                AVG(snapshot.total_gold * 1.0), AVG(snapshot.experience * 1.0), AVG(snapshot.level * 1.0)
+         FROM matches m JOIN player_matches pm ON pm.match_id = m.match_id
+         LEFT JOIN match_laning_snapshots snapshot
+           ON snapshot.match_id = m.match_id AND snapshot.puuid = pm.puuid AND snapshot.minute = 10
+         WHERE pm.puuid = ?1 AND pm.champion_id = ?2
+           AND m.queue_id IN (400, 420, 430) AND m.game_duration >= 600
+           AND (?3 = ?4 OR (?3 = ?5 AND m.queue_id IN (400, 430)) OR m.queue_id = ?3)
+           AND (?6 = '' OR m.patch = ?6)
+           AND (?7 = '' OR COALESCE(m.season_key, '') = ?7)",
+        params![puuid, champion_id, scope.queue_scope, crate::domain::aggregates::ALL_QUEUES,
+            crate::domain::aggregates::NORMAL_QUEUES, scope.patch, scope.season],
+        |row| Ok(LaningAtTenDto {
+            eligible_games: row.get::<_, i64>(0)?.max(0) as u64,
+            covered_games: row.get::<_, i64>(1)?.max(0) as u64,
+            average_cs_at_ten: row.get(2)?,
+            average_cs_per_minute_at_ten: row.get(3)?,
+            average_gold_at_ten: row.get(4)?,
+            average_xp_at_ten: row.get(5)?,
+            average_level_at_ten: row.get(6)?,
+        }),
+    ).map_err(Into::into)
+}
+
+fn historical_sync_diagnostics(
+    connection: &rusqlite::Connection,
+    puuid: &str,
+) -> AppResult<HistoricalSyncDto> {
+    let (matches_tracked, oldest_tracked_at, tracked_playtime_seconds): (i64, Option<i64>, i64) = connection.query_row(
+        "SELECT COUNT(*), MIN(m.game_creation), COALESCE(SUM(m.game_duration), 0)
+         FROM matches m JOIN player_matches pm ON pm.match_id = m.match_id WHERE pm.puuid = ?1",
+        [puuid],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let state = connection.query_row(
+        "SELECT initial_sync_complete, status, next_match_start FROM sync_state WHERE puuid = ?1",
+        [puuid],
+        |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
+    ).optional()?;
+    let (active_queue_rows, errored_queue_rows): (i64, i64) = connection.query_row(
+        "SELECT
+             COALESCE(SUM(CASE WHEN status IN ('pending', 'fetching') THEN 1 ELSE 0 END), 0),
+             COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0)
+         FROM sync_match_queue WHERE puuid = ?1",
+        [puuid],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let (history_status, next_match_start) = match state {
+        Some((initial_complete, status, cursor)) => (
+            historical_sync_status(
+                initial_complete,
+                &status,
+                active_queue_rows,
+                errored_queue_rows,
+            ),
+            cursor,
+        ),
+        None => ("Still backfilling", 0),
+    };
+    Ok(HistoricalSyncDto {
+        matches_tracked: matches_tracked.max(0) as u64,
+        oldest_tracked_at: oldest_tracked_at.and_then(|value| Utc.timestamp_millis_opt(value).single()).map(|value| value.to_rfc3339()),
+        tracked_playtime_seconds: tracked_playtime_seconds.max(0) as u64,
+        history_status: history_status.to_owned(),
+        next_match_start: next_match_start.max(0) as u64,
+    })
+}
+
+fn historical_sync_status(
+    initial_sync_complete: bool,
+    sync_status: &str,
+    active_queue_rows: i64,
+    errored_queue_rows: i64,
+) -> &'static str {
+    if sync_status == "error" || errored_queue_rows > 0 {
+        "Interrupted"
+    } else if !initial_sync_complete || active_queue_rows > 0 {
+        "Still backfilling"
+    } else {
+        "Complete"
+    }
+}
+
 fn average(value: i64, games: i64) -> f64 {
     if games <= 0 {
         0.0
@@ -657,6 +753,13 @@ fn empty_home(configured_executable_found: bool) -> HomeDto {
             configured_executable_found,
         },
         sync_state: idle_sync(),
+        historical_sync: HistoricalSyncDto {
+            matches_tracked: 0,
+            oldest_tracked_at: None,
+            tracked_playtime_seconds: 0,
+            history_status: "Not configured".to_owned(),
+            next_match_start: 0,
+        },
         tracked_career: counters_overview_dto(&AggregateCounters::default()),
         ranked_games: 0,
         recent_form: Vec::new(),
@@ -692,16 +795,21 @@ fn account_dto(account: Account) -> AccountDto {
 fn idle_sync() -> SyncStateDto {
     SyncStateDto {
         status: "idle".to_owned(),
+        currently_running: false,
+        trigger: None,
         completed: 0,
         total: None,
         message: None,
+        last_check_at: None,
         last_successful_sync_at: None,
     }
 }
 
 #[cfg(test)]
 mod enrichment_tests {
-    use super::{champion_summary, core_build_stats_dto, rune_page_stats_dto};
+    use super::{
+        champion_summary, core_build_stats_dto, historical_sync_status, rune_page_stats_dto,
+    };
     use crate::domain::aggregates::AggregateCounters;
     use crate::domain::analytics::{AnalyticsFilter, QueueFilter, TimeRangeFilter};
     use crate::domain::static_data::{GameEntity, StaticCatalog};
@@ -821,5 +929,23 @@ mod enrichment_tests {
             vec!["Adaptive Force", "Attack Speed", "Health Scaling"]
         );
         assert!(dto.stat_shards.iter().all(|shard| !shard.icon.is_empty()));
+    }
+
+    #[test]
+    fn historical_sync_status_distinguishes_completion_backfill_and_interruption() {
+        assert_eq!(historical_sync_status(true, "success", 0, 0), "Complete");
+        assert_eq!(
+            historical_sync_status(false, "syncing", 0, 0),
+            "Still backfilling"
+        );
+        assert_eq!(
+            historical_sync_status(true, "success", 3, 0),
+            "Still backfilling"
+        );
+        assert_eq!(historical_sync_status(true, "error", 0, 0), "Interrupted");
+        assert_eq!(
+            historical_sync_status(true, "success", 0, 1),
+            "Interrupted"
+        );
     }
 }

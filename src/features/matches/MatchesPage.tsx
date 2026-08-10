@@ -84,10 +84,10 @@ function Detail({ data }: { data: MatchDetailDto }) {
     <header><div><span className={data.win ? "result-win" : "result-loss"}>{data.win ? "VICTORY" : "DEFEAT"}</span><h2>{data.champion.name}</h2></div><span>{queueName(data.queueId)} · Patch {data.patch} · {new Date(data.gameCreation).toLocaleString()}</span></header>
     <div className="detail-stats"><span><small>K / D / A</small><b>{data.kills} / {data.deaths} / {data.assists}</b></span><span><small>CS</small><b>{data.totalCs}</b></span><span><small>GOLD</small><b>{data.goldEarned.toLocaleString()}</b></span><span><small>DURATION</small><b>{formatMatchDuration(data.durationSeconds)}</b></span></div>
     <div className="detail-groups">
-      <div><small>FINAL ITEMS</small><div className="icon-stack">{data.finalItems.map(({ item, slot }) => <EntityIcon entity={item} key={slot} />)}</div></div>
-      <div><small>SUMMONER SPELLS</small><div className="icon-stack">{data.summonerSpells.map((spell) => <EntityIcon entity={spell} key={spell.id} />)}</div></div>
-      <div><small>RUNES</small><div className="icon-stack">{[...data.runePage.primaryRunes, ...data.runePage.secondaryRunes, ...data.runePage.statShards].map((rune, index) => <EntityIcon entity={rune} key={`${rune.id}-${index}`} size={30} />)}</div></div>
-      <div><small>MULTI-KILLS</small><b>{multiKills.length ? multiKills.map(([name, count]) => `${name} ×${count}`).join(" · ") : "None"}</b></div>
+      <div className="detail-group"><small>FINAL ITEMS</small><div className="icon-stack">{data.finalItems.map(({ item, slot }) => <EntityIcon entity={item} key={slot} />)}</div></div>
+      <div className="detail-group"><small>SUMMONER SPELLS</small><div className="icon-stack">{data.summonerSpells.map((spell) => <EntityIcon entity={spell} key={spell.id} />)}</div></div>
+      <div className="detail-group"><small>RUNES</small><div className="icon-stack">{[...data.runePage.primaryRunes, ...data.runePage.secondaryRunes, ...data.runePage.statShards].map((rune, index) => <EntityIcon entity={rune} key={`${rune.id}-${index}`} size={30} />)}</div></div>
+      <div className="detail-group detail-multi-kills"><small>MULTI-KILLS</small>{multiKills.length ? <div className="detail-multi-kill-list">{multiKills.map(([name, count]) => <span key={name}><span>{name}</span><b>×{count}</b></span>)}</div> : <span className="detail-empty">None</span>}</div>
     </div>
   </aside>;
 }
