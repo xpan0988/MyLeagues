@@ -1,5 +1,6 @@
 pub mod account;
 pub mod aggregates;
+pub mod lane_analysis;
 pub mod matches;
 pub mod profile;
 pub mod settings;

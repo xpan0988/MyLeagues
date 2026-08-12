@@ -6,12 +6,20 @@ use rusqlite::{OptionalExtension, params};
 use crate::db::Database;
 use crate::db::repositories::account::AccountRepository;
 use crate::db::repositories::aggregates::AggregateRepository;
+use crate::db::repositories::lane_analysis::{
+    LaneAnalysisRepository, LaneMatchRecord, LanePerformanceAggregate,
+};
 use crate::db::repositories::matches::MatchRepository;
 use crate::db::repositories::static_data::StaticDataRepository;
 use crate::db::repositories::statistics::StatisticsRepository;
 use crate::domain::account::Account;
 use crate::domain::aggregates::AggregateCounters;
 use crate::domain::analytics::{AnalyticsFilter, QueueFilter, TimeRangeFilter};
+use crate::domain::lane_score::{
+    DERIVATION_VERSION, HISTORICAL_COMPATIBILITY_VERSION, MODEL_VERSION,
+};
+use crate::domain::matchup::{MatchupConfidence, MatchupMapping};
+use crate::domain::queues;
 use crate::domain::runes::RuneSelectionType;
 use crate::domain::static_data::StaticCatalog;
 use crate::domain::stats::{
@@ -21,9 +29,11 @@ use crate::domain::stats::{
 use crate::dto::analytics::{
     AccountDto, AnalyticsFilterDto, CareerDto, CareerQueuesDto, ChampionMasteryDto,
     ChampionProfileDto, ChampionSummaryDto, ClientStateDto, CoreBuildDto, CoreBuildStatsDto,
-    EntityUsageDto, HistoricalSyncDto, HomeDto, LaningAtTenDto, MatchDetailDto, MatchItemDto, MatchQueryDto, MatchSummaryDto, PageDto,
-    PerformanceDto, PreferenceDto, RankDto, ResolvedFilterDto, RunePageDto, RunePageStatsDto,
-    SpellPairStatsDto, SyncStateDto, TrackedOverviewDto,
+    EntityUsageDto, HistoricalSyncDto, HomeDto, LaneCheckpointDto, LaneCombatAttributionDto,
+    LaneCombatClusterDto, LaneEvidenceEventDto, LaneMatchDetailDto, LaneMatchSummaryDto,
+    LanePerformanceSummaryDto, LaningAtTenDto, MatchDetailDto, MatchItemDto, MatchQueryDto,
+    MatchSummaryDto, PageDto, PerformanceDto, PreferenceDto, RankDto, ResolvedFilterDto,
+    RunePageDto, RunePageStatsDto, SpellPairStatsDto, SyncStateDto, TrackedOverviewDto,
 };
 use crate::error::{AppError, AppResult};
 use crate::services::filters::{FilterResolver, ResolvedFilter};
@@ -45,7 +55,15 @@ impl<'state> AggregationService<'state> {
         };
         let recent = select(&samples, filter, None, Some(20));
 
-        let (overview, ranked_games, top_champions, rank, sync_state, historical_sync, configured_executable_found) = {
+        let (
+            overview,
+            ranked_games,
+            top_champions,
+            rank,
+            sync_state,
+            historical_sync,
+            configured_executable_found,
+        ) = {
             let connection = self.database.connection()?;
             let Some(account_ref) = account.as_ref() else {
                 return Ok(empty_home(configured_client_path(&connection)?));
@@ -166,7 +184,7 @@ impl<'state> AggregationService<'state> {
         filter: AnalyticsFilter,
     ) -> AppResult<ChampionProfileDto> {
         let (_, samples, mastery, catalog) = self.load()?;
-        let (counters, resolved, laning_at_ten) = {
+        let (counters, resolved, laning_at_ten, lane_performance) = {
             let connection = self.database.connection()?;
             let resolved = FilterResolver::resolve(&connection, filter)?;
             match AccountRepository::new(&connection).get()? {
@@ -177,10 +195,26 @@ impl<'state> AggregationService<'state> {
                         champion_id,
                         &resolved.aggregate_scope,
                     )?;
-                    let laning = laning_at_ten(&connection, &account.puuid, champion_id, &resolved.aggregate_scope)?;
-                    (counters, resolved, laning)
+                    let laning = laning_at_ten(
+                        &connection,
+                        &account.puuid,
+                        champion_id,
+                        &resolved.aggregate_scope,
+                    )?;
+                    let lane_performance = LaneAnalysisRepository::performance_summary(
+                        &connection,
+                        &account.puuid,
+                        Some(champion_id),
+                        &resolved.aggregate_scope,
+                    )?;
+                    (counters, resolved, laning, lane_performance)
                 }
-                None => (AggregateCounters::default(), resolved, LaningAtTenDto::default()),
+                None => (
+                    AggregateCounters::default(),
+                    resolved,
+                    LaningAtTenDto::default(),
+                    LanePerformanceAggregate::default(),
+                ),
             }
         };
         let selected = select_resolved(&samples, &resolved, Some(champion_id), None);
@@ -195,6 +229,7 @@ impl<'state> AggregationService<'state> {
             overview: counters_overview_dto(&counters),
             performance: counters_performance_dto(&counters),
             laning_at_ten,
+            lane_performance: lane_performance_dto(lane_performance),
             core_builds: core_build_usage(&selected)
                 .into_iter()
                 .map(|usage| core_build_stats_dto(usage, &catalog))
@@ -274,29 +309,49 @@ impl<'state> AggregationService<'state> {
         rows.truncate(limit as usize);
         let items = rows
             .into_iter()
-            .map(|sample| MatchSummaryDto {
-                match_id: sample.match_id,
-                champion: catalog.champion(sample.champion_id).into(),
-                win: sample.win,
-                queue_id: sample.queue_id,
-                kills: sample.kills,
-                deaths: sample.deaths,
-                assists: sample.assists,
-                duration_seconds: sample.duration_seconds,
-                keystone: sample.keystone_id.map(|id| catalog.rune(id).into()),
-                summoner_spells: sample
-                    .summoner_spell_ids
-                    .into_iter()
-                    .map(|id| catalog.spell(id).into())
-                    .collect(),
-                game_creation: Utc
-                    .timestamp_millis_opt(sample.game_creation)
-                    .single()
-                    .map(|value| value.to_rfc3339())
-                    .unwrap_or_else(|| sample.game_creation.to_string()),
-                patch: sample.patch.clone(),
+            .map(|sample| -> AppResult<MatchSummaryDto> {
+                let matchup =
+                    MatchRepository::matchup(&connection, &account.puuid, &sample.match_id)?;
+                let lane = lane_score_record_for_matchup(
+                    &connection,
+                    &account.puuid,
+                    &sample.match_id,
+                    &matchup,
+                    false,
+                )?
+                .as_ref()
+                .map(|record| lane_match_summary_dto(record, &catalog));
+                Ok(MatchSummaryDto {
+                    match_id: sample.match_id,
+                    champion: catalog.champion(sample.champion_id).into(),
+                    win: sample.win,
+                    queue_id: sample.queue_id,
+                    queue_display_name: queues::display_name(sample.queue_id),
+                    matchup_opponent: matchup
+                        .opponent
+                        .as_ref()
+                        .map(|opponent| catalog.champion(opponent.champion_id).into()),
+                    matchup_role: matchup.local_role.map(|role| role.as_str().to_owned()),
+                    kills: sample.kills,
+                    deaths: sample.deaths,
+                    assists: sample.assists,
+                    duration_seconds: sample.duration_seconds,
+                    keystone: sample.keystone_id.map(|id| catalog.rune(id).into()),
+                    summoner_spells: sample
+                        .summoner_spell_ids
+                        .into_iter()
+                        .map(|id| catalog.spell(id).into())
+                        .collect(),
+                    game_creation: Utc
+                        .timestamp_millis_opt(sample.game_creation)
+                        .single()
+                        .map(|value| value.to_rfc3339())
+                        .unwrap_or_else(|| sample.game_creation.to_string()),
+                    patch: sample.patch.clone(),
+                    lane,
+                })
             })
-            .collect();
+            .collect::<AppResult<Vec<_>>>()?;
         Ok(PageDto {
             items,
             next_cursor: has_more.then(|| offset.saturating_add(limit).to_string()),
@@ -315,6 +370,10 @@ impl<'state> AggregationService<'state> {
                 AppError::Configuration("match was not found in local history".to_owned())
             })?;
         let catalog = StaticDataRepository::catalog(&connection)?;
+        let matchup = MatchRepository::matchup(&connection, &account.puuid, match_id)?;
+        let lane =
+            lane_score_record_for_matchup(&connection, &account.puuid, match_id, &matchup, true)?
+                .map(|record| lane_match_detail_dto(record, &catalog));
         let mut primary = Vec::new();
         let mut secondary = Vec::new();
         let mut shards = Vec::new();
@@ -339,6 +398,12 @@ impl<'state> AggregationService<'state> {
             champion: catalog.champion(player.champion_id).into(),
             win: player.win,
             queue_id: record.queue_id,
+            queue_display_name: queues::display_name(record.queue_id),
+            matchup_opponent: matchup
+                .opponent
+                .as_ref()
+                .map(|opponent| catalog.champion(opponent.champion_id).into()),
+            matchup_role: matchup.local_role.map(|role| role.as_str().to_owned()),
             game_creation: Utc
                 .timestamp_millis_opt(record.game_creation)
                 .single()
@@ -380,6 +445,7 @@ impl<'state> AggregationService<'state> {
             triple_kills: player.triple_kills,
             quadra_kills: player.quadra_kills,
             penta_kills: player.penta_kills,
+            lane,
         })
     }
 
@@ -406,6 +472,12 @@ impl<'state> AggregationService<'state> {
             AggregateRepository::champions(&connection, &account.puuid, &resolved.aggregate_scope)?;
         let most_played_champion_id = champions.first().map(|(id, _)| *id);
         let champion_pool = champions.len() as u64;
+        let lane_performance = LaneAnalysisRepository::performance_summary(
+            &connection,
+            &account.puuid,
+            None,
+            &resolved.aggregate_scope,
+        )?;
         Ok(CareerDto {
             overall: counters_overview_dto(&overall),
             by_queue: CareerQueuesDto {
@@ -417,6 +489,7 @@ impl<'state> AggregationService<'state> {
                 as u64,
             most_played_champion_id,
             champion_pool,
+            lane_performance: lane_performance_dto(lane_performance),
         })
     }
 
@@ -657,12 +730,13 @@ fn historical_sync_diagnostics(
     connection: &rusqlite::Connection,
     puuid: &str,
 ) -> AppResult<HistoricalSyncDto> {
-    let (matches_tracked, oldest_tracked_at, tracked_playtime_seconds): (i64, Option<i64>, i64) = connection.query_row(
-        "SELECT COUNT(*), MIN(m.game_creation), COALESCE(SUM(m.game_duration), 0)
+    let (matches_tracked, oldest_tracked_at, tracked_playtime_seconds): (i64, Option<i64>, i64) =
+        connection.query_row(
+            "SELECT COUNT(*), MIN(m.game_creation), COALESCE(SUM(m.game_duration), 0)
          FROM matches m JOIN player_matches pm ON pm.match_id = m.match_id WHERE pm.puuid = ?1",
-        [puuid],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
+            [puuid],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
     let state = connection.query_row(
         "SELECT initial_sync_complete, status, next_match_start FROM sync_state WHERE puuid = ?1",
         [puuid],
@@ -690,7 +764,9 @@ fn historical_sync_diagnostics(
     };
     Ok(HistoricalSyncDto {
         matches_tracked: matches_tracked.max(0) as u64,
-        oldest_tracked_at: oldest_tracked_at.and_then(|value| Utc.timestamp_millis_opt(value).single()).map(|value| value.to_rfc3339()),
+        oldest_tracked_at: oldest_tracked_at
+            .and_then(|value| Utc.timestamp_millis_opt(value).single())
+            .map(|value| value.to_rfc3339()),
         tracked_playtime_seconds: tracked_playtime_seconds.max(0) as u64,
         history_status: history_status.to_owned(),
         next_match_start: next_match_start.max(0) as u64,
@@ -730,6 +806,161 @@ fn kda(counters: &AggregateCounters) -> f64 {
         numerator
     } else {
         numerator / counters.deaths as f64
+    }
+}
+
+fn lane_score_percent(score: f64) -> i64 {
+    (score.clamp(-1.0, 1.0) * 100.0).round() as i64
+}
+
+fn lane_score_record_for_matchup(
+    connection: &rusqlite::Connection,
+    puuid: &str,
+    match_id: &str,
+    matchup: &MatchupMapping,
+    include_evidence: bool,
+) -> AppResult<Option<LaneMatchRecord>> {
+    let Some(role) = matchup.local_role else {
+        return Ok(None);
+    };
+    if !role.lane_score_in_scope() {
+        return Ok(None);
+    }
+    let lane = LaneAnalysisRepository::match_lane(connection, puuid, match_id, include_evidence)?;
+    if let (MatchupConfidence::High, Some(matchup_opponent), Some(lane_record)) =
+        (matchup.confidence, matchup.opponent.as_ref(), lane.as_ref())
+    {
+        if lane_record.confidence == "HIGH"
+            && lane_record.opponent_participant_id != Some(matchup_opponent.participant_id)
+        {
+            return Err(AppError::Configuration(
+                "TOP matchup and LaneScore opponent derivations disagree".to_owned(),
+            ));
+        }
+    }
+    Ok(lane)
+}
+
+fn lane_performance_dto(value: LanePerformanceAggregate) -> LanePerformanceSummaryDto {
+    let evaluated = value.tracked_matches;
+    LanePerformanceSummaryDto {
+        tracked_matches: value.tracked_matches,
+        scored_matches: value.scored_matches,
+        excluded_matches: value.excluded_matches,
+        average_lane_score: value.average_lane_score,
+        average_lane_score_percent: value.average_lane_score.map(lane_score_percent),
+        // Category thresholds are intentionally absent from the current
+        // experimental manifest. Rates/counts remain unavailable, not zero.
+        lane_advantage_rate: None,
+        crush_rate: None,
+        crushed_count: None,
+        won_count: None,
+        even_count: None,
+        lost_count: None,
+        got_crushed_count: None,
+        coverage_percent: percentage(value.scored_matches as i64, evaluated as i64),
+        history_start_utc: value.history_start_utc,
+        history_end_utc: value.history_end_utc,
+        model_version: MODEL_VERSION.to_owned(),
+        derivation_version: DERIVATION_VERSION.to_owned(),
+        ruleset_version: HISTORICAL_COMPATIBILITY_VERSION.to_owned(),
+        compatible_ruleset_versions: value.compatible_ruleset_versions,
+        experimental: true,
+    }
+}
+
+fn lane_match_summary_dto(value: &LaneMatchRecord, catalog: &StaticCatalog) -> LaneMatchSummaryDto {
+    LaneMatchSummaryDto {
+        opponent_champion: value
+            .opponent_champion_id
+            .map(|id| catalog.champion(id).into()),
+        confidence: value.confidence.clone(),
+        lane_score: value.score,
+        lane_score_percent: value.score.map(lane_score_percent),
+        exclusion_reason: value.exclusion_reason.clone(),
+    }
+}
+
+fn lane_match_detail_dto(value: LaneMatchRecord, catalog: &StaticCatalog) -> LaneMatchDetailDto {
+    let evidence =
+        |event: crate::db::repositories::lane_analysis::LaneEventRecord| LaneEvidenceEventDto {
+            event_type: event.event_type,
+            timestamp_ms: event.timestamp_ms,
+            team_id: event.team_id,
+            detail: event.detail,
+            attribution_confidence: if event.killer_participant_id.is_some() {
+                "PARTICIPANT".to_owned()
+            } else if event.team_id.is_some() {
+                "TEAM_SIDE".to_owned()
+            } else {
+                "UNAVAILABLE".to_owned()
+            },
+        };
+    LaneMatchDetailDto {
+        opponent_champion: value
+            .opponent_champion_id
+            .map(|id| catalog.champion(id).into()),
+        // The normalized facts retain PUUID, not an opponent Riot ID. No
+        // additional network request is made for presentation.
+        opponent_riot_id: None,
+        confidence: value.confidence,
+        lane_score: value.score,
+        lane_score_percent: value.score.map(lane_score_percent),
+        category: None,
+        exclusion_reason: value.exclusion_reason,
+        cutoff_timestamp_ms: value.cutoff_timestamp_ms,
+        cutoff_reason: value.cutoff_reason,
+        checkpoints: value
+            .checkpoints
+            .into_iter()
+            .map(|checkpoint| LaneCheckpointDto {
+                label: checkpoint.label,
+                timestamp_ms: checkpoint.timestamp_ms,
+                level_difference: checkpoint.level_difference,
+                xp_difference: checkpoint.xp_difference,
+                lane_cs_difference: checkpoint.lane_cs_difference,
+                gold_difference: checkpoint.gold_difference,
+            })
+            .collect(),
+        combat_clusters: value
+            .combat_clusters
+            .into_iter()
+            .map(|cluster| LaneCombatClusterDto {
+                classification: cluster.classification,
+                start_timestamp_ms: cluster.start_timestamp_ms,
+                end_timestamp_ms: cluster.end_timestamp_ms,
+                signed_strength: cluster.signed_strength,
+                attributions: cluster
+                    .attributions
+                    .into_iter()
+                    .map(|attribution| LaneCombatAttributionDto {
+                        source_event_id: attribution.source_event_id,
+                        contributor_count: attribution.contributor_count,
+                        lane_pair_contributor_id: attribution.lane_pair_contributor_id,
+                        lane_opponent_involved: attribution.lane_opponent_involved,
+                        lane_opponent_share: attribution.lane_opponent_share,
+                        signed_lane_pair_share: attribution.signed_lane_pair_share,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        pressure_events: value.pressure_events.into_iter().map(evidence).collect(),
+        objective_events: value.objective_events.into_iter().map(evidence).collect(),
+        exp: value.exp,
+        combat: value.combat,
+        farm: value.farm,
+        pressure: value.pressure,
+        conversion: value.conversion,
+        gold_consistency: value.gold_consistency,
+        coverage: value
+            .coverage_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
+            .unwrap_or_else(|| serde_json::json!({})),
+        model_version: value.model_version,
+        derivation_version: value.derivation_version,
+        ruleset_version: value.ruleset_version,
+        experimental: true,
     }
 }
 
@@ -779,6 +1010,7 @@ fn empty_career() -> CareerDto {
         average_match_duration_seconds: 0,
         most_played_champion_id: None,
         champion_pool: 0,
+        lane_performance: lane_performance_dto(LanePerformanceAggregate::default()),
     }
 }
 
@@ -808,7 +1040,8 @@ fn idle_sync() -> SyncStateDto {
 #[cfg(test)]
 mod enrichment_tests {
     use super::{
-        champion_summary, core_build_stats_dto, historical_sync_status, rune_page_stats_dto,
+        champion_summary, core_build_stats_dto, historical_sync_status, lane_score_percent,
+        rune_page_stats_dto,
     };
     use crate::domain::aggregates::AggregateCounters;
     use crate::domain::analytics::{AnalyticsFilter, QueueFilter, TimeRangeFilter};
@@ -943,9 +1176,13 @@ mod enrichment_tests {
             "Still backfilling"
         );
         assert_eq!(historical_sync_status(true, "error", 0, 0), "Interrupted");
-        assert_eq!(
-            historical_sync_status(true, "success", 0, 1),
-            "Interrupted"
-        );
+        assert_eq!(historical_sync_status(true, "success", 0, 1), "Interrupted");
+    }
+
+    #[test]
+    fn lane_score_display_is_signed_percentage_not_probability() {
+        assert_eq!(lane_score_percent(0.78), 78);
+        assert_eq!(lane_score_percent(-0.41), -41);
+        assert_eq!(lane_score_percent(0.0), 0);
     }
 }

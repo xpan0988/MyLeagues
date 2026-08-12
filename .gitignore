@@ -4,6 +4,7 @@ src-tauri/target/
 .env
 .env.*
 !.env.example
+src-tauri/dev-secrets.toml
 *.db
 *.db-shm
 *.db-wal
@@ -11,4 +12,4 @@ src-tauri/target/
 .DS_Store
 .idea/
 .vscode/
-
+.prograph/

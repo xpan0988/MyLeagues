@@ -1,6 +1,6 @@
-use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 #[cfg(windows)]
@@ -86,11 +86,15 @@ fn common_paths() -> Vec<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn common_paths() -> Vec<PathBuf> {
-    vec![PathBuf::from("/Applications/Riot Client.app/Contents/MacOS/RiotClientServices")]
+    vec![PathBuf::from(
+        "/Applications/Riot Client.app/Contents/MacOS/RiotClientServices",
+    )]
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn common_paths() -> Vec<PathBuf> { Vec::new() }
+fn common_paths() -> Vec<PathBuf> {
+    Vec::new()
+}
 
 #[cfg(target_os = "windows")]
 fn running_processes() -> AppResult<Vec<String>> {

@@ -20,7 +20,15 @@ pub async fn update_settings(
     let saved = SettingsService::new(&state.database, &state.config).update(settings.into())?;
     if !saved.game_name.is_empty() && !saved.tag_line.is_empty() {
         if let Some(riot) = state.riot.clone() {
-            sync::start_background(state.database.clone(), riot, state.sync.clone(), state.timeline.clone(), app, SyncTrigger::SettingsSaved).await;
+            sync::start_background(
+                state.database.clone(),
+                riot,
+                state.sync.clone(),
+                state.timeline.clone(),
+                app,
+                SyncTrigger::SettingsSaved,
+            )
+            .await;
         }
     }
     Ok(saved)

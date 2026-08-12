@@ -1,6 +1,7 @@
 use chrono::{Datelike, TimeZone, Utc};
 
 use crate::domain::items::FinalItem;
+use crate::domain::lane_score::ParticipantFact;
 use crate::domain::match_record::{MatchRecord, PlayerMatch};
 use crate::domain::runes::{RuneSelection, RuneSelectionType};
 use crate::error::{AppError, AppResult};
@@ -9,6 +10,12 @@ use crate::riot::types::{MatchResponse, ParticipantResponse};
 pub struct ParsedMatch {
     pub match_record: MatchRecord,
     pub player_match: PlayerMatch,
+    pub participant_roster: Vec<ParsedParticipant>,
+}
+
+pub struct ParsedParticipant {
+    pub puuid: String,
+    pub fact: ParticipantFact,
 }
 
 pub fn parse_match(response: MatchResponse, puuid: &str) -> AppResult<ParsedMatch> {
@@ -47,9 +54,27 @@ pub fn parse_match(response: MatchResponse, puuid: &str) -> AppResult<ParsedMatc
     };
     let player_match = parse_participant(response.metadata.match_id, participant);
 
+    let participant_roster = response
+        .info
+        .participants
+        .iter()
+        .filter_map(|p| {
+            Some(ParsedParticipant {
+                puuid: p.puuid.clone(),
+                fact: ParticipantFact {
+                    participant_id: p.participant_id?,
+                    team_id: p.team_id?,
+                    champion_id: p.champion_id,
+                    team_position: p.team_position.clone(),
+                    individual_position: p.individual_position.clone(),
+                },
+            })
+        })
+        .collect();
     Ok(ParsedMatch {
         match_record,
         player_match,
+        participant_roster,
     })
 }
 

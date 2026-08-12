@@ -1,5 +1,6 @@
 pub mod aggregation;
 pub mod filters;
+pub mod lane_analysis;
 pub mod launcher;
 pub mod maintenance;
 pub mod settings;

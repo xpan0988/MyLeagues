@@ -10,7 +10,15 @@ pub async fn start_sync(app: AppHandle, state: State<'_, AppState>) -> AppResult
     let riot = state.riot.clone().ok_or_else(|| {
         AppError::Configuration("RIOT_API_KEY is not configured in the backend".to_owned())
     })?;
-    Ok(sync::start_background(state.database.clone(), riot, state.sync.clone(), state.timeline.clone(), app, SyncTrigger::Manual).await)
+    Ok(sync::start_background(
+        state.database.clone(),
+        riot,
+        state.sync.clone(),
+        state.timeline.clone(),
+        app,
+        SyncTrigger::Manual,
+    )
+    .await)
 }
 
 #[tauri::command]
@@ -19,13 +27,27 @@ pub async fn request_freshness_check(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<SyncStateDto> {
-    let riot = state.riot.clone().ok_or_else(|| AppError::Configuration("RIOT_API_KEY is not configured in the backend".to_owned()))?;
+    let riot = state.riot.clone().ok_or_else(|| {
+        AppError::Configuration("RIOT_API_KEY is not configured in the backend".to_owned())
+    })?;
     let trigger = match trigger.as_str() {
         "periodic" => SyncTrigger::Periodic,
         "resume" => SyncTrigger::Resume,
-        _ => return Err(AppError::Configuration("invalid automatic sync trigger".to_owned())),
+        _ => {
+            return Err(AppError::Configuration(
+                "invalid automatic sync trigger".to_owned(),
+            ));
+        }
     };
-    sync::start_if_stale(state.database.clone(), riot, state.sync.clone(), state.timeline.clone(), app, trigger).await
+    sync::start_if_stale(
+        state.database.clone(),
+        riot,
+        state.sync.clone(),
+        state.timeline.clone(),
+        app,
+        trigger,
+    )
+    .await
 }
 
 #[tauri::command]

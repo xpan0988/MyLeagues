@@ -121,6 +121,7 @@ export interface ChampionProfileDto {
     averageXpAtTen: number | null;
     averageLevelAtTen: number | null;
   };
+  lanePerformance: LanePerformanceSummaryDto;
   coreBuilds: Array<{
     items: GameEntityDto[];
     games: number;
@@ -150,6 +151,87 @@ export interface ChampionProfileDto {
   }>;
 }
 
+export interface LanePerformanceSummaryDto {
+  trackedMatches: number;
+  scoredMatches: number;
+  excludedMatches: number;
+  averageLaneScore: number | null;
+  averageLaneScorePercent: number | null;
+  laneAdvantageRate: number | null;
+  crushRate: number | null;
+  crushedCount: number | null;
+  wonCount: number | null;
+  evenCount: number | null;
+  lostCount: number | null;
+  gotCrushedCount: number | null;
+  coveragePercent: number;
+  historyStartUtc: string | null;
+  historyEndUtc: string | null;
+  modelVersion: string;
+  derivationVersion: string;
+  rulesetVersion: string;
+  compatibleRulesetVersions: string[];
+  experimental: boolean;
+}
+
+export interface LaneMatchSummaryDto {
+  opponentChampion: GameEntityDto | null;
+  confidence: string;
+  laneScore: number | null;
+  laneScorePercent: number | null;
+  exclusionReason: string | null;
+}
+
+export interface LaneMatchDetailDto extends LaneMatchSummaryDto {
+  opponentRiotId: string | null;
+  category: string | null;
+  cutoffTimestampMs: number | null;
+  cutoffReason: string | null;
+  checkpoints: Array<{
+    label: string;
+    timestampMs: number;
+    levelDifference: number;
+    xpDifference: number;
+    laneCsDifference: number;
+    goldDifference: number;
+  }>;
+  combatClusters: Array<{
+    classification: string;
+    startTimestampMs: number;
+    endTimestampMs: number;
+    signedStrength: number;
+    attributions: Array<{
+      sourceEventId: string;
+      contributorCount: number;
+      lanePairContributorId: number | null;
+      laneOpponentInvolved: boolean;
+      laneOpponentShare: number;
+      signedLanePairShare: number;
+    }>;
+  }>;
+  pressureEvents: LaneEvidenceEventDto[];
+  objectiveEvents: LaneEvidenceEventDto[];
+  exp: number | null;
+  combat: number | null;
+  farm: number | null;
+  pressure: number | null;
+  conversion: number | null;
+  goldConsistency: string | null;
+  coverage: Record<string, string>;
+  modelVersion: string;
+  derivationVersion: string;
+  rulesetVersion: string;
+  experimental: boolean;
+}
+
+export interface LaneEvidenceEventDto {
+  eventType: string;
+  timestampMs: number;
+  teamId: number | null;
+  detail: string | null;
+  attributionConfidence: string;
+}
+
 export interface EntityUsageDto {
   entity: GameEntityDto;
   games: number;
@@ -163,6 +245,9 @@ export interface MatchSummaryDto {
   champion: GameEntityDto;
   win: boolean;
   queueId: number;
+  queueDisplayName: string;
+  matchupOpponent: GameEntityDto | null;
+  matchupRole: string | null;
   kills: number;
   deaths: number;
   assists: number;
@@ -171,6 +256,7 @@ export interface MatchSummaryDto {
   summonerSpells: GameEntityDto[];
   gameCreation: string;
   patch: string;
+  lane: LaneMatchSummaryDto | null;
 }
 
 export interface RunePageDto {
@@ -186,6 +272,9 @@ export interface MatchDetailDto {
   champion: GameEntityDto;
   win: boolean;
   queueId: number;
+  queueDisplayName: string;
+  matchupOpponent: GameEntityDto | null;
+  matchupRole: string | null;
   gameCreation: string;
   durationSeconds: number;
   patch: string;
@@ -201,6 +290,7 @@ export interface MatchDetailDto {
   tripleKills: number;
   quadraKills: number;
   pentaKills: number;
+  lane: LaneMatchDetailDto | null;
 }
 
 export interface HomeDto {
@@ -227,6 +317,7 @@ export interface CareerDto {
   averageMatchDurationSeconds: number;
   mostPlayedChampionId: number | null;
   championPool: number;
+  lanePerformance: LanePerformanceSummaryDto;
 }
 
 export interface SettingsDto {

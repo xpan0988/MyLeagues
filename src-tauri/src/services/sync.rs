@@ -175,23 +175,48 @@ pub async fn start_background(
         let _ = app.emit("sync-state-changed", checking);
         let task_coordinator = Arc::clone(&coordinator);
         tauri::async_runtime::spawn(async move {
-            let result = run(Arc::clone(&database), Arc::clone(&riot), Arc::clone(&task_coordinator), app.clone(), trigger).await;
+            let result = run(
+                Arc::clone(&database),
+                Arc::clone(&riot),
+                Arc::clone(&task_coordinator),
+                app.clone(),
+                trigger,
+            )
+            .await;
             task_coordinator.finish(&app, &result).await;
             if result.is_ok() {
                 let candidate = (|| -> AppResult<(String, RegionalRoute)> {
                     let connection = database.connection()?;
-                    let account = AccountRepository::new(&connection).get()?.ok_or_else(|| AppError::Configuration("configured account disappeared during synchronization".to_owned()))?;
-                    Ok((account.puuid, PlatformRoute::parse(&account.platform_region)?.match_route()))
+                    let account = AccountRepository::new(&connection).get()?.ok_or_else(|| {
+                        AppError::Configuration(
+                            "configured account disappeared during synchronization".to_owned(),
+                        )
+                    })?;
+                    Ok((
+                        account.puuid,
+                        PlatformRoute::parse(&account.platform_region)?.match_route(),
+                    ))
                 })();
                 if let Ok((puuid, route)) = candidate {
-                    timeline::start_background(database, riot, task_coordinator.clone(), timeline_coordinator, app.clone(), puuid, route).await;
+                    timeline::start_background(
+                        database,
+                        riot,
+                        task_coordinator.clone(),
+                        timeline_coordinator,
+                        app.clone(),
+                        puuid,
+                        route,
+                    )
+                    .await;
                 }
             }
             if let Err(error) = result {
                 tracing::error!(error = %error, "background synchronization failed");
             }
         });
-    } else { tracing::info!(target: "sync", trigger = trigger.as_str(), "coalesced synchronization attempt because a worker is already running"); }
+    } else {
+        tracing::info!(target: "sync", trigger = trigger.as_str(), "coalesced synchronization attempt because a worker is already running");
+    }
     coordinator.snapshot().await
 }
 
@@ -203,7 +228,9 @@ pub async fn start_if_stale(
     app: AppHandle,
     trigger: SyncTrigger,
 ) -> AppResult<SyncStateDto> {
-    if coordinator.is_running().await { return Ok(coordinator.snapshot().await); }
+    if coordinator.is_running().await {
+        return Ok(coordinator.snapshot().await);
+    }
     let should_start = {
         let connection = database.connection()?;
         let settings = SettingsRepository::new(&connection).get()?;
@@ -211,14 +238,25 @@ pub async fn start_if_stale(
             false
         } else if let Some(account) = AccountRepository::new(&connection).get()? {
             SyncRepository::ensure(&connection, &account.puuid)?;
-            SyncRepository::get(&connection, &account.puuid)?.last_check_at
-                .as_deref().map(is_stale).unwrap_or(true)
+            SyncRepository::get(&connection, &account.puuid)?
+                .last_check_at
+                .as_deref()
+                .map(is_stale)
+                .unwrap_or(true)
         } else {
             true
         }
     };
     Ok(if should_start {
-        start_background(database, riot, coordinator, timeline_coordinator, app, trigger).await
+        start_background(
+            database,
+            riot,
+            coordinator,
+            timeline_coordinator,
+            app,
+            trigger,
+        )
+        .await
     } else {
         coordinator.snapshot().await
     })
@@ -227,8 +265,19 @@ pub async fn start_if_stale(
 fn is_stale(value: &str) -> bool {
     let parsed = chrono::DateTime::parse_from_rfc3339(value)
         .map(|date| date.with_timezone(&chrono::Utc))
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").map(|date| date.and_utc()));
-    parsed.map(|date| chrono::Utc::now().signed_duration_since(date).to_std().map(|age| age >= FRESHNESS_INTERVAL).unwrap_or(true)).unwrap_or(true)
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+                .map(|date| date.and_utc())
+        });
+    parsed
+        .map(|date| {
+            chrono::Utc::now()
+                .signed_duration_since(date)
+                .to_std()
+                .map(|age| age >= FRESHNESS_INTERVAL)
+                .unwrap_or(true)
+        })
+        .unwrap_or(true)
 }
 
 pub async fn run(
@@ -485,12 +534,18 @@ async fn process_pending(
             metrics.parse += parse_started.elapsed();
             let timing = {
                 let mut connection = database.connection()?;
-                MatchRepository::ingest_synced_timed(
+                let timing = MatchRepository::ingest_synced_timed(
                     &mut connection,
                     &parsed.match_record,
                     &parsed.player_match,
                 )?
-                .1
+                .1;
+                MatchRepository::upsert_participant_roster(
+                    &mut connection,
+                    &parsed.match_record.match_id,
+                    &parsed.participant_roster,
+                )?;
+                timing
             };
             metrics.db += timing.total;
             metrics.aggregate += timing.aggregate;
@@ -582,10 +637,23 @@ mod progress_tests {
     #[test]
     fn every_automatic_and_manual_source_has_a_non_secret_diagnostic_trigger() {
         assert_eq!(
-            [SyncTrigger::Startup, SyncTrigger::SettingsSaved, SyncTrigger::Periodic,
-                SyncTrigger::Resume, SyncTrigger::Manual, SyncTrigger::ArchiveReset]
-                .map(SyncTrigger::as_str),
-            ["startup", "settings_saved", "periodic", "resume", "manual", "archive_reset"],
+            [
+                SyncTrigger::Startup,
+                SyncTrigger::SettingsSaved,
+                SyncTrigger::Periodic,
+                SyncTrigger::Resume,
+                SyncTrigger::Manual,
+                SyncTrigger::ArchiveReset
+            ]
+            .map(SyncTrigger::as_str),
+            [
+                "startup",
+                "settings_saved",
+                "periodic",
+                "resume",
+                "manual",
+                "archive_reset"
+            ],
         );
     }
 

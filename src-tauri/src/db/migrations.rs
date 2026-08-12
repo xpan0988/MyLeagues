@@ -29,6 +29,41 @@ const MIGRATIONS: &[Migration] = &[
         name: "sync_laning_timeline",
         sql: include_str!("../../migrations/0004_sync_laning_timeline.sql"),
     },
+    Migration {
+        version: 5,
+        name: "lane_score_facts",
+        sql: include_str!("../../migrations/0005_lane_score_facts.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "lane_score_model_manifest",
+        sql: include_str!("../../migrations/0006_lane_score_model_manifest.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "lane_timeline_event_provenance",
+        sql: include_str!("../../migrations/0007_lane_timeline_event_provenance.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "lane_score_product_eligibility",
+        sql: include_str!("../../migrations/0008_lane_score_product_eligibility.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "lane_score_swiftplay_cutoff",
+        sql: include_str!("../../migrations/0009_lane_score_swiftplay_cutoff.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "lane_score_swiftplay_recover_cutoff_jobs",
+        sql: include_str!("../../migrations/0010_lane_score_swiftplay_recover_cutoff_jobs.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "lane_combat_contributor_attribution",
+        sql: include_str!("../../migrations/0011_lane_combat_contributor_attribution.sql"),
+    },
 ];
 
 pub fn run(connection: &mut Connection) -> AppResult<()> {
@@ -83,7 +118,7 @@ mod tests {
                 row.get(0)
             })?;
 
-        assert_eq!(applied, 4);
+        assert_eq!(applied, 11);
         Ok(())
     }
 }

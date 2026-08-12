@@ -5,8 +5,10 @@ use crate::db::repositories::aggregates::AggregateRepository;
 use crate::domain::aggregates::{ALL_QUEUES, AggregateScope, NORMAL_QUEUES};
 use crate::domain::items::FinalItem;
 use crate::domain::match_record::{MatchRecord, PlayerMatch};
+use crate::domain::matchup::{MatchupMapping, MatchupParticipant, derive_matchup};
 use crate::domain::runes::{RuneSelection, RuneSelectionType};
 use crate::error::AppResult;
+use crate::riot::parser::ParsedParticipant;
 
 #[derive(Clone, Debug)]
 pub struct MatchListRow {
@@ -34,6 +36,62 @@ pub struct IngestTiming {
 pub struct MatchRepository;
 
 impl MatchRepository {
+    pub fn matchup(
+        connection: &Connection,
+        puuid: &str,
+        match_id: &str,
+    ) -> AppResult<MatchupMapping> {
+        let local_id = connection
+            .query_row(
+                "SELECT participant_id FROM match_participants WHERE match_id=?1 AND puuid=?2",
+                params![match_id, puuid],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let mut statement = connection.prepare(
+            "SELECT participant_id,team_id,champion_id,team_position,individual_position
+             FROM match_participants WHERE match_id=?1 ORDER BY participant_id",
+        )?;
+        let participants = statement
+            .query_map([match_id], |row| {
+                Ok(MatchupParticipant {
+                    participant_id: row.get(0)?,
+                    team_id: row.get(1)?,
+                    champion_id: row.get(2)?,
+                    team_position: row.get(3)?,
+                    individual_position: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(local_id.map_or_else(
+            || MatchupMapping {
+                local_role: None,
+                opponent: None,
+                confidence: crate::domain::matchup::MatchupConfidence::Unavailable,
+            },
+            |participant_id| derive_matchup(&participants, participant_id),
+        ))
+    }
+
+    pub fn upsert_participant_roster(
+        connection: &mut Connection,
+        match_id: &str,
+        roster: &[ParsedParticipant],
+    ) -> AppResult<()> {
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for participant in roster {
+            let fact = &participant.fact;
+            tx.execute(
+                "INSERT INTO match_participants (match_id, participant_id, puuid, team_id, champion_id, team_position, individual_position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(match_id, participant_id) DO UPDATE SET puuid=excluded.puuid, team_id=excluded.team_id,
+                   champion_id=excluded.champion_id, team_position=excluded.team_position, individual_position=excluded.individual_position",
+                params![match_id, fact.participant_id, participant.puuid, fact.team_id, fact.champion_id, fact.team_position, fact.individual_position],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
     pub fn page(
         connection: &Connection,
         puuid: &str,
@@ -362,7 +420,10 @@ mod tests {
     use crate::db::repositories::sync::SyncRepository;
     use crate::domain::account::Account;
     use crate::domain::aggregates::{ALL_QUEUES, AggregateScope};
+    use crate::domain::lane_score::ParticipantFact;
     use crate::domain::match_record::{MatchRecord, PlayerMatch};
+    use crate::domain::matchup::MatchRole;
+    use crate::riot::parser::ParsedParticipant;
 
     use super::MatchRepository;
 
@@ -459,6 +520,59 @@ mod tests {
             (aggregate.games, aggregate.kills, aggregate.playtime_seconds),
             (1, 10, 1_800)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn matchup_uses_stored_same_role_participant_not_enemy_top()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let database = setup()?;
+        let mut connection = database.connection()?;
+        let record = match_record("OC1_matchup", 420, "16.15");
+        assert!(MatchRepository::ingest(
+            &mut connection,
+            &record,
+            &player("OC1_matchup", 1, 0)
+        )?);
+        MatchRepository::upsert_participant_roster(
+            &mut connection,
+            &record.match_id,
+            &[
+                ParsedParticipant {
+                    puuid: "test-puuid".into(),
+                    fact: ParticipantFact {
+                        participant_id: 1,
+                        team_id: 100,
+                        champion_id: 1,
+                        team_position: "MIDDLE".into(),
+                        individual_position: "MIDDLE".into(),
+                    },
+                },
+                ParsedParticipant {
+                    puuid: "enemy-mid".into(),
+                    fact: ParticipantFact {
+                        participant_id: 2,
+                        team_id: 200,
+                        champion_id: 2,
+                        team_position: "MIDDLE".into(),
+                        individual_position: "MIDDLE".into(),
+                    },
+                },
+                ParsedParticipant {
+                    puuid: "enemy-top".into(),
+                    fact: ParticipantFact {
+                        participant_id: 3,
+                        team_id: 200,
+                        champion_id: 3,
+                        team_position: "TOP".into(),
+                        individual_position: "TOP".into(),
+                    },
+                },
+            ],
+        )?;
+        let matchup = MatchRepository::matchup(&connection, "test-puuid", &record.match_id)?;
+        assert_eq!(matchup.local_role, Some(MatchRole::Middle));
+        assert_eq!(matchup.opponent.unwrap().participant_id, 2);
         Ok(())
     }
 

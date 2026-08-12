@@ -182,6 +182,12 @@ pub struct ParticipantResponse {
     pub participant_id: Option<i64>,
     pub puuid: String,
     pub champion_id: i64,
+    #[serde(default)]
+    pub team_id: Option<i64>,
+    #[serde(default)]
+    pub team_position: String,
+    #[serde(default)]
+    pub individual_position: String,
     pub win: bool,
     pub kills: i64,
     pub deaths: i64,
@@ -205,8 +211,8 @@ pub struct ParticipantResponse {
     pub perks: PerksResponse,
 }
 
-/// Match-V5 timeline payload. We intentionally deserialize only compact facts
-/// needed for laning analytics; events and unneeded frame fields are ignored.
+/// Match-V5 timeline payload is converted immediately into normalized facts.
+/// Raw JSON is deliberately not retained as the authoritative model.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineResponse {
@@ -233,6 +239,8 @@ pub struct TimelineFrameResponse {
     pub timestamp: i64,
     #[serde(default)]
     pub participant_frames: HashMap<String, TimelineParticipantFrameResponse>,
+    #[serde(default)]
+    pub events: Vec<TimelineEventResponse>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -243,6 +251,41 @@ pub struct TimelineParticipantFrameResponse {
     pub level: i64,
     pub minions_killed: i64,
     pub jungle_minions_killed: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineEventResponse {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    #[serde(default)]
+    pub timestamp: Option<i64>,
+    #[serde(default)]
+    pub killer_id: Option<i64>,
+    #[serde(default)]
+    pub victim_id: Option<i64>,
+    #[serde(default)]
+    pub team_id: Option<i64>,
+    #[serde(default)]
+    pub assisting_participant_ids: Vec<i64>,
+    #[serde(default)]
+    pub monster_type: Option<String>,
+    #[serde(default)]
+    pub monster_sub_type: Option<String>,
+    #[serde(default)]
+    pub building_type: Option<String>,
+    #[serde(default)]
+    pub tower_type: Option<String>,
+    #[serde(default)]
+    pub lane_type: Option<String>,
+    #[serde(default)]
+    pub position: Option<TimelinePositionResponse>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct TimelinePositionResponse {
+    pub x: i64,
+    pub y: i64,
 }
 
 #[cfg(test)]
@@ -264,8 +307,57 @@ mod timeline_tests {
         .unwrap();
         let frame = &value.info.frames[0];
         let player = &frame.participant_frames["1"];
-        assert_eq!((value.info.frame_interval, frame.timestamp), (60_000, 600_000));
-        assert_eq!((player.total_gold, player.xp, player.level, player.minions_killed, player.jungle_minions_killed), (4123, 5040, 6, 71, 3));
+        assert_eq!(
+            (value.info.frame_interval, frame.timestamp),
+            (60_000, 600_000)
+        );
+        assert_eq!(
+            (
+                player.total_gold,
+                player.xp,
+                player.level,
+                player.minions_killed,
+                player.jungle_minions_killed
+            ),
+            (4123, 5040, 6, 71, 3)
+        );
+    }
+
+    #[test]
+    fn deserializes_sanitized_lane_score_event_variants() {
+        let value: TimelineResponse = serde_json::from_str(
+            r#"{
+                "metadata":{"participants":["local-puuid"]},
+                "info":{"frameInterval":60000,"frames":[{
+                    "timestamp":600000,
+                    "participantFrames":{},
+                    "events":[
+                        {"type":"CHAMPION_KILL","timestamp":601000,"killerId":1,"victimId":6,"assistingParticipantIds":[2],"position":{"x":3100,"y":12200}},
+                        {"type":"TURRET_PLATE_DESTROYED","timestamp":602000,"teamId":200,"killerId":0,"laneType":"TOP_LANE","position":{"x":4318,"y":13875}},
+                        {"type":"BUILDING_KILL","timestamp":603000,"teamId":200,"killerId":1,"buildingType":"TOWER_BUILDING","towerType":"OUTER_TURRET","laneType":"TOP_LANE","position":{"x":4318,"y":13875}},
+                        {"type":"ELITE_MONSTER_KILL","timestamp":604000,"killerId":1,"monsterType":"VOID_GRUB","monsterSubType":"VOID_GRUB"},
+                        {"type":"ELITE_MONSTER_KILL","timestamp":605000,"killerId":1,"monsterType":"RIFTHERALD","monsterSubType":"RIFTHERALD"}
+                    ]
+                }]}
+            }"#,
+        )
+        .unwrap();
+
+        let events = &value.info.frames[0].events;
+        assert_eq!(events[0].event_type, "CHAMPION_KILL");
+        assert_eq!(events[0].assisting_participant_ids, vec![2]);
+        assert_eq!(
+            events[0].position.as_ref().map(|p| (p.x, p.y)),
+            Some((3100, 12200))
+        );
+        assert_eq!(events[1].killer_id, Some(0));
+        assert_eq!(events[1].team_id, Some(200));
+        assert_eq!(events[2].building_type.as_deref(), Some("TOWER_BUILDING"));
+        assert_eq!(events[2].tower_type.as_deref(), Some("OUTER_TURRET"));
+        assert_eq!(events[2].lane_type.as_deref(), Some("TOP_LANE"));
+        assert_eq!(events[3].monster_type.as_deref(), Some("VOID_GRUB"));
+        assert_eq!(events[3].monster_sub_type.as_deref(), Some("VOID_GRUB"));
+        assert_eq!(events[4].monster_type.as_deref(), Some("RIFTHERALD"));
     }
 }
 

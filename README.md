@@ -7,7 +7,7 @@ MyLeague is a private local-first Windows/macOS League of Legends launcher and o
 - Home, Champions, Champion Profile, Matches, Career, and Settings desktop views.
 - Incremental Match-V5 synchronization with a persistent, resumable work queue.
 - Automatic startup, settings-save, foreground-periodic, and resume freshness checks; Sync Now remains a manual check/retry.
-- Persistent low-priority Match-V5 Timeline enrichment for laning @10 facts and honest coverage reporting.
+- Persistent low-priority Match-V5 Timeline enrichment for laning @10 facts and a separate, resumable LaneScore fact revision.
 - Normalized SQLite match facts plus rebuildable persistent career/champion aggregate caches.
 - Queue and time filters resolved by Rust: Ranked Solo, Normal, ARAM, All; Current Patch, Current Season, All Tracked.
 - Version-aware Data Dragon metadata cache for champions, items, rune trees, and summoner spells.
@@ -15,9 +15,10 @@ MyLeague is a private local-first Windows/macOS League of Legends launcher and o
 - Offline browsing when Riot API access or the network is unavailable.
 - Official Riot/League process detection and safe Riot Client launch.
 
-LANING @10 is factual analytics. An explainable LaneScore is architected but
-not implemented; the current UI does not claim lane-win or crushed-lane
-results. See [LaneScore Architecture v0](docs/lane-score-architecture.md).
+LANING @10 remains factual analytics. LaneScore fact extraction and an
+experimental per-match cache are local-only; the UI does not claim lane-win or
+crushed-lane categories or aggregate rates. See [LaneScore Architecture v0](docs/lane-score-architecture.md)
+and [the experimental model manifest](docs/lane-score-model-v0.md).
 
 ## Setup
 
@@ -28,6 +29,12 @@ npm.cmd install
 $env:RIOT_API_KEY = "your-development-key"
 npm.cmd run tauri dev
 ```
+
+For normal local development, copy `src-tauri/dev-secrets.example.toml` to
+`src-tauri/dev-secrets.toml` and set `riot_api_key` there. The local file is
+gitignored and is used only by debug builds. Resolution is `RIOT_API_KEY`, then
+that local file, then missing; the key is never stored in SQLite or exposed to
+the frontend.
 
 Open Settings and configure the single Riot ID, account routing region, platform region, and optionally the full path to `RiotClientServices.exe`. `RIOT_API_KEY` is read only by Rust; never expose it through a `VITE_` variable.
 

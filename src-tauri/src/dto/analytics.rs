@@ -208,6 +208,7 @@ pub struct ChampionProfileDto {
     pub overview: TrackedOverviewDto,
     pub performance: PerformanceDto,
     pub laning_at_ten: LaningAtTenDto,
+    pub lane_performance: LanePerformanceSummaryDto,
     pub core_builds: Vec<CoreBuildStatsDto>,
     pub boots: Vec<EntityUsageDto>,
     pub rune_pages: Vec<RunePageStatsDto>,
@@ -286,6 +287,112 @@ pub struct PerformanceDto {
     pub penta_kills: u64,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanePerformanceSummaryDto {
+    pub tracked_matches: u64,
+    pub scored_matches: u64,
+    pub excluded_matches: u64,
+    pub average_lane_score: Option<f64>,
+    pub average_lane_score_percent: Option<i64>,
+    pub lane_advantage_rate: Option<f64>,
+    pub crush_rate: Option<f64>,
+    pub crushed_count: Option<u64>,
+    pub won_count: Option<u64>,
+    pub even_count: Option<u64>,
+    pub lost_count: Option<u64>,
+    pub got_crushed_count: Option<u64>,
+    pub coverage_percent: f64,
+    pub history_start_utc: Option<String>,
+    pub history_end_utc: Option<String>,
+    pub model_version: String,
+    pub derivation_version: String,
+    pub ruleset_version: String,
+    pub compatible_ruleset_versions: Vec<String>,
+    pub experimental: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneMatchSummaryDto {
+    pub opponent_champion: Option<GameEntityDto>,
+    pub confidence: String,
+    pub lane_score: Option<f64>,
+    pub lane_score_percent: Option<i64>,
+    pub exclusion_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneCheckpointDto {
+    pub label: String,
+    pub timestamp_ms: i64,
+    pub level_difference: i64,
+    pub xp_difference: i64,
+    pub lane_cs_difference: i64,
+    pub gold_difference: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneCombatClusterDto {
+    pub classification: String,
+    pub start_timestamp_ms: i64,
+    pub end_timestamp_ms: i64,
+    pub signed_strength: f64,
+    pub attributions: Vec<LaneCombatAttributionDto>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneCombatAttributionDto {
+    pub source_event_id: String,
+    pub contributor_count: usize,
+    pub lane_pair_contributor_id: Option<i64>,
+    pub lane_opponent_involved: bool,
+    pub lane_opponent_share: f64,
+    pub signed_lane_pair_share: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneEvidenceEventDto {
+    pub event_type: String,
+    pub timestamp_ms: i64,
+    pub team_id: Option<i64>,
+    pub detail: Option<String>,
+    pub attribution_confidence: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneMatchDetailDto {
+    pub opponent_champion: Option<GameEntityDto>,
+    pub opponent_riot_id: Option<String>,
+    pub confidence: String,
+    pub lane_score: Option<f64>,
+    pub lane_score_percent: Option<i64>,
+    pub category: Option<String>,
+    pub exclusion_reason: Option<String>,
+    pub cutoff_timestamp_ms: Option<i64>,
+    pub cutoff_reason: Option<String>,
+    pub checkpoints: Vec<LaneCheckpointDto>,
+    pub combat_clusters: Vec<LaneCombatClusterDto>,
+    pub pressure_events: Vec<LaneEvidenceEventDto>,
+    pub objective_events: Vec<LaneEvidenceEventDto>,
+    pub exp: Option<f64>,
+    pub combat: Option<f64>,
+    pub farm: Option<f64>,
+    pub pressure: Option<f64>,
+    pub conversion: Option<f64>,
+    pub gold_consistency: Option<String>,
+    pub coverage: serde_json::Value,
+    pub model_version: String,
+    pub derivation_version: String,
+    pub ruleset_version: String,
+    pub experimental: bool,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchQueryDto {
@@ -303,6 +410,9 @@ pub struct MatchSummaryDto {
     pub champion: GameEntityDto,
     pub win: bool,
     pub queue_id: i64,
+    pub queue_display_name: String,
+    pub matchup_opponent: Option<GameEntityDto>,
+    pub matchup_role: Option<String>,
     pub kills: i64,
     pub deaths: i64,
     pub assists: i64,
@@ -311,6 +421,7 @@ pub struct MatchSummaryDto {
     pub summoner_spells: Vec<GameEntityDto>,
     pub game_creation: String,
     pub patch: String,
+    pub lane: Option<LaneMatchSummaryDto>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -337,6 +448,9 @@ pub struct MatchDetailDto {
     pub champion: GameEntityDto,
     pub win: bool,
     pub queue_id: i64,
+    pub queue_display_name: String,
+    pub matchup_opponent: Option<GameEntityDto>,
+    pub matchup_role: Option<String>,
     pub game_creation: String,
     pub duration_seconds: i64,
     pub patch: String,
@@ -352,6 +466,7 @@ pub struct MatchDetailDto {
     pub triple_kills: i64,
     pub quadra_kills: i64,
     pub penta_kills: i64,
+    pub lane: Option<LaneMatchDetailDto>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -404,6 +519,7 @@ pub struct CareerDto {
     pub average_match_duration_seconds: u64,
     pub most_played_champion_id: Option<i64>,
     pub champion_pool: u64,
+    pub lane_performance: LanePerformanceSummaryDto,
 }
 
 #[derive(Clone, Debug, Serialize)]

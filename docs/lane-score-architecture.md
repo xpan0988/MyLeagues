@@ -1,12 +1,12 @@
 # LaneScore Architecture v0
 
-**Status: ARCHITECTURE FROZEN FOR FACT-EXTRACTION IMPLEMENTATION**
+**Status: ARCHITECTURE FROZEN WITH APPROVED PRODUCT/ELIGIBILITY AMENDMENT**
 
-This is the canonical design for future MyLeague top-lane evaluation work. It
-freezes the ownership boundaries, model decomposition, correctness obligations,
-and versioning rules before implementation. It does **not** implement LaneScore,
-new Timeline ingestion, opponent mapping, CombatClusters, migrations, UI,
-calibration, weights, or category thresholds.
+This is the canonical design for MyLeague top-lane evaluation work. It freezes
+the ownership boundaries, model decomposition, correctness obligations,
+eligibility rules, product semantics, and versioning rules. The normalized fact
+pipeline and experimental per-match score are implemented; calibration and
+category thresholds remain deliberately unfinished.
 
 ## 1. Purpose and scope
 
@@ -30,12 +30,12 @@ This architecture excludes final win/loss, final KDA, final damage, vision,
 bot-side objectives, post-lane teamfights, opponent rank, external ratings,
 machine learning, and AI/LLM judgement as LaneScore inputs.
 
-## 2. Current implementation versus future architecture
+## 2. Current implementation and ownership
 
 ### Current implementation
 
-MyLeague currently persists normalized Match-V5 facts for the configured player
-and a compact Timeline V1 fact at nominal minute 10:
+MyLeague persists normalized Match-V5 facts for the configured player and the
+legacy compact Timeline V1 fact at nominal minute 10:
 
 - lane minions, neutral minions, gold, XP, and level;
 - the selected frame's actual timestamp;
@@ -47,16 +47,16 @@ means lane-minion CS only; jungle monsters are separate. If an exact 600000 ms
 frame is absent, the current enrichment selects the first later frame, so a
 nominal `@10` fact can be slightly after 10:00.
 
-Current MyLeague does **not** collect or retain all participants' role/team
-facts, an opponent mapping, multi-frame opponent states, Timeline events,
-plates, turret facts, objective facts, combat clusters, lane-phase boundaries,
-or LaneScore. The current UI must not claim lane-win, crushed-lane, or
-LaneScore results.
+The LaneScore fact revision additionally retains all participants' role/team
+facts, multi-frame states, selected normalized Timeline events, versioned
+opponent mappings, cutoff/checkpoint derivations, CombatClusters, and a
+versioned rebuildable experimental score cache. Category labels and calibrated
+lane-win/crush statistics are not implemented.
 
-### Future architecture
+### Implemented architecture boundary
 
-The future implementation must add factual coverage before computing a score.
-It must retain source facts and make every derived layer rebuildable:
+The implementation retains source facts and makes every derived layer
+rebuildable:
 
 ```text
 AUTHORITATIVE NORMALIZED FACTS
@@ -238,6 +238,18 @@ accumulate through a bounded diminishing-return combiner. The clustering
 window, map-region rule, and cluster-strength values are **INITIAL HYPOTHESES
 — REQUIRES CALIBRATION**.
 
+### 5.3 Direct kill participant attribution
+
+Within an otherwise qualifying atomic cluster, direct lane-pair Combat credit
+comes only from the normalized kill contributors: the valid killer plus unique
+valid assists, excluding the victim. If the lane opponent is a contributor to
+the local player's death, their direct share is `1 / contributor_count`; if
+they are absent, their direct lane-pair share is zero. The same share is
+applied with the opposite sign for the other lane perspective, preserving exact
+antisymmetry. This does not discard the downstream EXP, Farm, or Pressure
+consequences of a gank, and it does not weaken a valid solo reinforcement
+reversal merely because multiple enemies were defeated.
+
 ### 5.1 Context and anti-teamfight rules
 
 A qualifying cluster requires lane-pair participation, lane-phase timing, and
@@ -329,6 +341,26 @@ The modifier is small and bounded. It must not turn an otherwise even lane
 into a crushed lane. Objective classification, participation semantics, and
 modifier cap are **INITIAL HYPOTHESES — REQUIRES CALIBRATION**.
 
+### 8.1 Swiftplay objective policy
+
+Swiftplay is a supported Summoner's Rift queue in the same Career and Champion
+TOP population, but neutral-objective conversion is deliberately outside its
+LaneScore contract. Its result is explicit rather than inferred from absent
+facts:
+
+```text
+ObjectiveConversionStatus::NotApplicableByQueue
+ObjectiveModifier = 0
+Z = Z_core + PressureModifier + 0
+```
+
+Void Grubs, Rift Herald, and other neutral-objective conversion evidence do
+not contribute for Swiftplay. This is neither `Missing`, `Unavailable`, nor
+`ObservedZero`; it must not reduce coverage, renormalize EXP/Combat/Farm
+weights, or make Pressure stronger. Valid lane-pair `CHAMPION_KILL` evidence
+near a neutral objective remains eligible for its independently satisfied
+CombatCluster rule.
+
 ## 9. Gold consistency and confidence
 
 Gold is a state verification, confidence, and missing-fact detector. It is not
@@ -352,6 +384,9 @@ Standard diagnostics remain useful:
 - @6, @8, @10, @12, and @14 when valid frames exist;
 - the exact selected timestamp is always retained with the nominal label.
 
+`@10` is a standardized factual benchmark only. It does not define lane end,
+and it does not truncate the trajectory consumed by LaneScore.
+
 Event-relative checkpoints are also required:
 
 - `PRE_GRUBS`
@@ -365,18 +400,41 @@ No post-event state may be used to establish pre-existing priority.
 Later lane-phase frames may eventually receive different integration weight,
 but the schedule is an **INITIAL HYPOTHESIS — REQUIRES CALIBRATION**.
 
-## 11. Conservative V0 lane phase
+## 11. Lane-analysis cutoff
 
-V0 ends lane phase at the earliest of:
+For an otherwise eligible traditional supported match, the cutoff is
+ruleset-aware:
 
-- top outer turret destruction;
-- a calibrated global lane-phase cap;
-- game end.
+```text
+candidate = first valid Rift Herald kill timestamp, if present
+          | 14:00 fallback, otherwise
+lane_cutoff = min(candidate, ruleset_lane_cap)
+```
 
-The cap is an **INITIAL HYPOTHESIS — REQUIRES CALIBRATION**. V0 does not infer
-continuous roaming or lane abandonment because the required reliable movement
-facts are not currently available. Rift Herald timing alone does not end lane
-phase.
+The current experimental 16.x ruleset uses a centralized 17:00 maximum cap.
+That cap is **INITIAL_HYPOTHESIS_REQUIRES_CALIBRATION**. The 14:00 fallback and
+Herald-anchor behavior are frozen product semantics; neither value may be
+scattered through services or UI code.
+
+When Herald is the anchor, final state and `PRE_HERALD` use the latest paired
+participant frame strictly before the event. A frame at or after Herald death
+cannot establish pre-existing priority. CombatCluster and Objective Conversion
+may still use qualifying Herald-fight events under their existing rules. If a
+Herald kill is later than the cap, the cap wins and its exact frame may be used;
+if no Herald is killed, analysis stops at 14:00 rather than waiting indefinitely.
+Top outer turret facts remain Pressure evidence and an event-relative
+checkpoint; they no longer define the lane cutoff.
+
+Swiftplay has a queue-specific derivation policy instead:
+
+```text
+Swiftplay lane_cutoff = 14:00
+```
+
+It still requires a game duration of at least 14:00, but never uses Rift
+Herald death, `PRE_HERALD`, or a Herald-derived extension to choose its lane
+window. This does not disable valid lane CombatClusters or top-lane structural
+Pressure before 14:00.
 
 ## 12. Lane opponent mapping and confidence
 
@@ -392,9 +450,9 @@ LOW         partial/conflicting role evidence or unusual composition
 UNAVAILABLE no unique reliable opponent
 ```
 
-Only HIGH and, after future validation, possibly MEDIUM matches may enter
-official LaneScore statistics. LOW and UNAVAILABLE produce no official score.
-The final inclusion policy is not frozen.
+Only HIGH-confidence mappings enter LaneScore V0 statistics. MEDIUM, LOW, and
+UNAVAILABLE remain diagnostic-only and produce an explicit
+`OPPONENT_UNAVAILABLE` exclusion rather than a guessed score.
 
 ## 13. Missing-data semantics and confidence
 
@@ -416,11 +474,37 @@ Z = Z_core + PressureModifier + ObjectiveModifier
 
 If Pressure is unavailable, omit its modifier and lower coverage/confidence as
 appropriate; do not convert it to zero and do not alter `Z_core`'s scale.
+Swiftplay's queue-policy Objective Conversion N/A is the explicit exception:
+it contributes policy zero without reducing coverage or altering `Z_core`.
 
 A missing core dimension is more serious. Whether all three core dimensions
 are strictly required for a final score remains a calibration/validation
 decision. Until that policy is frozen, a result contract must be able to return
 `insufficient_evidence` rather than manufacture a score.
+
+### 13.1 Match eligibility and exclusion
+
+LaneScore V0 statistics contain only score-ready supported Summoner's Rift TOP
+matches under a supported ruleset, with HIGH opponent confidence and complete
+required core facts. The supported Career population is Ranked Solo,
+traditional Normal/Draft, historically supported Blind Pick, Quickplay, and
+Swiftplay. Swiftplay is combined with the other supported queues; it has no
+separate user-facing LaneScore tier, Career statistic, or Champion statistic.
+Matches ending before the 14:00 fallback horizon are unavailable
+and excluded from aggregate denominators. This conservatively excludes remakes,
+abnormal early surrender, and other very short terminations. Unsupported
+queues/modes, unsupported roles/rulesets, missing opponents, and incomplete
+facts are also excluded.
+
+Exclusion is explicit and queryable through reason codes such as
+`UNSUPPORTED_QUEUE`, `UNSUPPORTED_ROLE`, `GAME_TOO_SHORT`,
+`OPPONENT_UNAVAILABLE`, `FACTS_INCOMPLETE`, and `RULESET_UNSUPPORTED`.
+Excluded or missing scores are never treated as `EVEN`.
+
+A normal surrender after the 14:00 horizon is not automatically excluded. If
+the match reached a valid cutoff and all other facts are complete, it may be
+scored regardless of the later team result. Final win/loss remains outside the
+model.
 
 ## 14. Final composition and explainability contract
 
@@ -433,7 +517,7 @@ Z      = Z_core + bounded PressureModifier + bounded ObjectiveModifier
 S      = OddBoundedTransform(Z)
 ```
 
-An eventual result is conceptually:
+The implemented result contract follows this shape:
 
 ```text
 LaneScoreResult {
@@ -448,14 +532,39 @@ LaneScoreResult {
 }
 ```
 
-Presentation must explain dimensions and facts, not merely show a scalar. A
-future explanation can name sustained level/XP state, lane CS, an atomic
+Presentation must explain dimensions and facts, not merely show a scalar. The
+expanded diagnostic can name sustained level/XP state, lane CS, an atomic
 anti-gank cluster, team-side structural pressure, and pre-objective conversion
 with their confidence and provenance.
 
+### 14.1 Product presentation
+
+The internal score remains `S in [-1, 1]`. Product surfaces display the signed
+percentage `S * 100`, for example `Lane Score +78%` or `Lane Score -41%`.
+This is signed lane dominance, not probability, percentile, win chance, or
+confidence; `(S + 1) / 2` is forbidden.
+
+Career and Champion Profile consume backend aggregates over persisted scores
+matching one exact model/feature/derivation/ruleset/parameter identity. Their
+rate denominator is score-ready eligible TOP matches, never all tracked games.
+Until category thresholds exist, Average Lane Score, scored/excluded coverage,
+and model identity are shown while category-derived rates/counts remain
+unavailable. Champion Profile retains the separate factual `LANING @10`
+section.
+
+Matches may show opponent champion and signed LaneScore in the collapsed row,
+then checkpoints, cutoff reason, atomic combat, pressure/objective evidence,
+dimensions, Gold consistency, coverage, and version identity in expanded
+detail. Opponent Riot ID is shown only when already present in authoritative
+stored facts; presentation must not trigger an extra Riot request.
+
+Swiftplay uses the same normal match presentation (`vs opponent`, `Lane Score
++XX%`). Expanded diagnostics may state `Objective Conversion: Not applicable
+for Swiftplay`; this is not an error or incomplete coverage.
+
 ## 15. Formal invariants and proof obligations
 
-The eventual implementation must prove or test:
+The implementation must prove or test:
 
 1. **Boundedness:** `-1 <= S <= 1`.
 2. **Antisymmetry:** `S(A, B) = -S(B, A)` when symmetric evidence is
@@ -547,25 +656,57 @@ Historical results retain their manifest and ruleset identity. Cross-ruleset
 aggregates must either group by compatible model/ruleset or label the mixture;
 they must never silently present incomparable scores as one homogeneous metric.
 
-## 19. Proposed future fact schema
+Career and Champion LANING PERFORMANCE use an explicit compatibility set, not
+only the newest ruleset. The implemented historical product window begins at
+the earliest tracked compatible traditional Summoner's Rift match and currently
+contains:
 
-Future schema work must be driven by this document, but is deliberately not
-implemented here. The smallest normalized additions are expected to include:
+- `riot-2024-late-sr-lane-v0` for raw Match-V5 `14.22`–`14.23`;
+- `riot-2025-s1-sr-lane-v0` for raw `15.4`–`15.8`;
+- `riot-2025-s2-sr-lane-v0` for raw `15.9`–`15.23`;
+- `riot-2026-sr-lane-v0` for raw `16.1`–`16.15` (the tracked archive begins
+  at `16.4`, but the semantic 2026 ruleset begins at `16.1`).
+
+Raw Match-V5 build families are not Riot's public year-prefixed patch names:
+for example raw `16.x` corresponds to public 2026 `26.x` patches. Each score
+retains its exact ruleset version, while the aggregate also exposes the bounded
+compatibility-set identity and member rulesets.
+
+Traditional Draft, Ranked Solo, historically supported Blind Pick, Quickplay,
+and Swiftplay queue 480 are compatible for this historical V0 scope. Swiftplay
+is deliberately included in the same supported Summoner's Rift Career and
+Champion TOP population, not silently treated as missing enrichment and not
+exposed as a separate user-facing tier. Its queue-specific derivation contract
+uses the same core evidence and structural Pressure, a fixed 14:00 cutoff, and
+`ObjectiveConversionStatus::NotApplicableByQueue` with a policy-zero modifier.
+
+The historical manifests share the experimental LaneScore mathematics and
+parameter hash, but record mechanic differences. Late 2024 and early 2025 have
+up to two Void Grub encounters; public patch 25.09 moves to one encounter and a
+15:00 Herald spawn. The 2026 ruleset keeps the one-encounter objective shape and
+introduces permanent plates on all lane turrets plus top-lane role-quest XP.
+These differences require distribution review before any calibration claim;
+this compatibility set enables descriptive experimental coverage only.
+
+## 19. Implemented fact and derivation schema
+
+The implemented normalized additions include:
 
 - full `match_participants` roster facts: participant, team, champion, and role
   fields;
 - generalized Timeline participant snapshots for both lane sides and multiple
-  timestamps, replacing indefinite duplication of the V1 local @10 projection;
+  timestamps, alongside the unchanged V1 local @10 projection;
 - selected normalized Timeline events plus event-participant relations;
 - versioned lane-opponent mapping facts;
-- versioned lane-phase and checkpoint derivations;
+- versioned lane-cutoff and checkpoint derivations;
 - rebuildable CombatCluster and score caches, each linked to source facts and
   derivation/model versions.
 
 Facts remain durable. Clusters, checkpoints, model features, and scores are
-rebuildable. Historical archive enrichment will require versioned persistent
-backfill work because current V1 completion only means V1 @10 facts were
-captured, not that all future lane facts exist.
+rebuildable. Historical archive enrichment uses a persistent fact queue
+independent from V1 and a separate derivation queue. A derivation-version change
+reuses complete normalized facts locally and refetches Riot payloads only when
+authoritative facts are missing.
 
 ## 20. Known Riot-data limitations
 
@@ -576,17 +717,14 @@ ambiguity in unusual games, potentially absent frames, and patch-dependent
 objective semantics. These limitations lower confidence or make a match
 unscorable; they must not be hidden with inferred neutral values.
 
-## 21. Implementation phases
+## 21. Implementation status
 
-The next implementation phase is factual coverage, not scoring:
-
-1. Persist full participant roster/team/role facts and backfill them.
-2. Persist multi-frame lane-pair snapshots and selected Timeline events.
-3. Implement versioned opponent mapping, lane phase, and checkpoints with
-   fixtures and coverage reporting.
-4. Implement rebuildable lane-pair CombatClusters and pressure/objective facts.
-5. Build a blind-label calibration dataset and validation harness.
-6. Only then implement and freeze a calibrated model manifest and score cache.
+Participant rosters, multi-frame states, selected events, opponent mapping,
+cutoffs/checkpoints, CombatClusters, dimensions, eligibility, experimental score
+cache, local re-derivation, and product diagnostics are implemented. Real-data
+coverage still depends on the persistent Riot fact backfill. Blind-label
+calibration, validated category thresholds, and calibrated aggregate category
+rates remain future work.
 
 ## 22. Explicitly unfrozen parameters
 
@@ -598,7 +736,7 @@ The following remain unfrozen and every numeric proposal for them is an
 - core composition weights and final saturation shape;
 - CombatCluster time window, map-region boundaries, and cluster strengths;
 - CS absolute/relative scales and breakpoints;
-- lane-phase cap and trajectory weights;
+- the 17:00 ruleset maximum cap and trajectory weights;
 - pressure and objective modifier caps;
 - high-versus-medium confidence inclusion policy;
 - category thresholds and final calibrated parameter values.
@@ -612,12 +750,20 @@ Frozen decisions are:
 - normalized facts are authoritative and scores are rebuildable;
 - level evidence is raw-superlinear before separate bounded saturation;
 - combat is lane-pair-centric, atomic, and antisymmetric;
-- objective conversion is explicitly antisymmetric and pre-event only;
+- traditional objective conversion is explicitly antisymmetric and pre-event
+  only; Swiftplay objective conversion is explicit queue-policy N/A/zero;
 - EXP, Combat, and Farm are core; Pressure and Conversion are bounded optional
   modifiers without missing-data weight renormalization;
 - Gold is consistency/confidence only;
 - trajectory and actual frame timestamps matter;
 - opponent ambiguity yields unavailable rather than fake precision;
 - all scores are patch/ruleset-aware, versioned, and reproducible;
+- @10 remains a benchmark while traditional Herald/fallback/cap or the
+  Swiftplay fixed-14:00 policy resolves lane cutoff;
+- traditional pre-Herald state is strictly before the Herald event; Swiftplay
+  has no Herald-derived lane-end state;
+- short/remake-like games are excluded while normal post-horizon surrenders may
+  remain eligible;
+- product display uses signed `S * 100`, never probability semantics;
 - calibration determines semantics and categories after—not before—fact
   extraction and validation.

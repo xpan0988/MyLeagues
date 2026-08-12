@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use config::BackendConfig;
 use db::Database;
+use db::repositories::account::AccountRepository;
 use db::repositories::settings::SettingsRepository;
 use riot::client::RiotApiClient;
 use riot::ddragon::DataDragonClient;
@@ -52,6 +53,12 @@ pub fn run() {
                 let settings = SettingsRepository::new(&connection).get()?;
                 riot.is_some() && !settings.game_name.is_empty() && !settings.tag_line.is_empty()
             };
+            let local_lane_puuid = {
+                let connection = database.connection()?;
+                AccountRepository::new(&connection)
+                    .get()?
+                    .map(|account| account.puuid)
+            };
             let database = Arc::new(database);
             let sync = Arc::new(SyncCoordinator::new());
             let timeline = Arc::new(TimelineCoordinator::new());
@@ -80,6 +87,15 @@ pub fn run() {
                         services::sync::start_background(sync_database, riot, background_sync, background_timeline, app_handle, services::sync::SyncTrigger::Startup).await;
                     });
                 }
+            } else if let Some(puuid) = local_lane_puuid {
+                let local_lane_database = Arc::clone(&database);
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) =
+                        services::lane_analysis::rederive_local(&local_lane_database, &puuid)
+                    {
+                        tracing::warn!(target: "lane_analysis", error = %error, "local LaneScore re-derivation paused; persistent queue will resume");
+                    }
+                });
             }
             let static_database = Arc::clone(&database);
             tauri::async_runtime::spawn(async move {

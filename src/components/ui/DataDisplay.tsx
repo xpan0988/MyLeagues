@@ -39,13 +39,6 @@ export function formatMatchDuration(seconds: number) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-export function queueName(id: number) {
-  if (id === 420) return "Ranked Solo";
-  if (id === 450) return "ARAM";
-  if (id === 400 || id === 430) return "Normal";
-  return `Queue ${id}`;
-}
-
 export function friendlyError(error: unknown) {
   const value = error instanceof Error ? error.message : String(error);
   if (/401|403|expired|invalid.*key/i.test(value)) return "Sync unavailable: the Riot API key is missing or expired. Cached data remains available.";

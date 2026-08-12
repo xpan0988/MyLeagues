@@ -19,7 +19,15 @@ pub fn clear_static_cache(state: State<'_, AppState>) -> AppResult<()> {
 pub async fn reset_local_archive(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
     MaintenanceService::new(&state.database).reset_local_archive()?;
     if let Some(riot) = state.riot.clone() {
-        sync::start_background(state.database.clone(), riot, state.sync.clone(), state.timeline.clone(), app, SyncTrigger::ArchiveReset).await;
+        sync::start_background(
+            state.database.clone(),
+            riot,
+            state.sync.clone(),
+            state.timeline.clone(),
+            app,
+            SyncTrigger::ArchiveReset,
+        )
+        .await;
     }
     Ok(())
 }
