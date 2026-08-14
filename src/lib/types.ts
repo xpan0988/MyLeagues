@@ -189,6 +189,14 @@ export interface LaneMatchDetailDto extends LaneMatchSummaryDto {
   cutoffReason: string | null;
   checkpoints: Array<{
     label: string;
+    eventTimestampMs: number | null;
+    timestampMs: number;
+    levelDifference: number;
+    xpDifference: number;
+    laneCsDifference: number;
+    goldDifference: number;
+  }>;
+  trajectory: Array<{
     timestampMs: number;
     levelDifference: number;
     xpDifference: number;

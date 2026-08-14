@@ -1,6 +1,7 @@
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::domain::aggregates::AggregateScope;
+use crate::domain::items::ItemTimelineEvent;
 use crate::domain::lane_score::{
     self, CombatCluster, LaneCutoff, LanePair, LaneState, ParticipantFact, ScoreResult,
     TimelineEvent,
@@ -24,6 +25,16 @@ pub struct LanePerformanceAggregate {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LaneCheckpointRecord {
     pub label: String,
+    pub event_timestamp_ms: Option<i64>,
+    pub timestamp_ms: i64,
+    pub level_difference: i64,
+    pub xp_difference: i64,
+    pub lane_cs_difference: i64,
+    pub gold_difference: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaneTrajectoryPointRecord {
     pub timestamp_ms: i64,
     pub level_difference: i64,
     pub xp_difference: i64,
@@ -69,6 +80,7 @@ pub struct LaneMatchRecord {
     pub derivation_version: String,
     pub ruleset_version: String,
     pub checkpoints: Vec<LaneCheckpointRecord>,
+    pub trajectory: Vec<LaneTrajectoryPointRecord>,
     pub combat_clusters: Vec<LaneCombatRecord>,
     pub pressure_events: Vec<LaneEventRecord>,
     pub objective_events: Vec<LaneEventRecord>,
@@ -82,17 +94,23 @@ impl LaneAnalysisRepository {
             .parameters
             .lane_fallback_ms
             / 1_000;
-        let patch_14 = format!("{}.%", lane_score::COMPATIBLE_RULESETS[0].raw_patch_major);
-        let patch_15 = format!("{}.%", lane_score::COMPATIBLE_RULESETS[1].raw_patch_major);
-        let patch_16 = format!("{}.%", lane_score::COMPATIBLE_RULESETS[3].raw_patch_major);
+        let rulesets = &lane_score::COMPATIBLE_RULESETS;
         Ok(connection.execute(
-            "INSERT OR REPLACE INTO lane_score_eligibility(
+            "WITH compatible_rulesets(raw_major,minor_from,minor_to) AS (
+                VALUES (?4,?5,?6), (?7,?8,?9), (?10,?11,?12), (?13,?14,?15)
+             )
+             INSERT OR REPLACE INTO lane_score_eligibility(
                 match_id,perspective_participant_id,derivation_version,score_ready,
                 exclusion_reason,cutoff_timestamp_ms,cutoff_reason,evaluated_at)
              SELECT m.match_id,pm.participant_id,?2,0,
                     CASE
                       WHEN m.queue_id NOT IN (400,420,430,480,490) THEN 'UNSUPPORTED_QUEUE'
-                      WHEN m.patch NOT LIKE ?4 AND m.patch NOT LIKE ?5 AND m.patch NOT LIKE ?6
+                      WHEN NOT EXISTS (
+                        SELECT 1 FROM compatible_rulesets ruleset
+                        WHERE CAST(substr(m.patch,1,instr(m.patch,'.')-1) AS INTEGER)=ruleset.raw_major
+                          AND CAST(substr(m.patch,instr(m.patch,'.')+1) AS INTEGER)
+                              BETWEEN ruleset.minor_from AND ruleset.minor_to
+                      )
                         THEN 'RULESET_UNSUPPORTED'
                       ELSE 'GAME_TOO_SHORT'
                     END,
@@ -100,15 +118,29 @@ impl LaneAnalysisRepository {
              FROM matches m JOIN player_matches pm ON pm.match_id=m.match_id
              WHERE pm.puuid=?1 AND pm.participant_id IS NOT NULL
                AND (m.queue_id NOT IN (400,420,430,480,490)
-                    OR (m.patch NOT LIKE ?4 AND m.patch NOT LIKE ?5 AND m.patch NOT LIKE ?6)
+                    OR NOT EXISTS (
+                      SELECT 1 FROM compatible_rulesets ruleset
+                      WHERE CAST(substr(m.patch,1,instr(m.patch,'.')-1) AS INTEGER)=ruleset.raw_major
+                        AND CAST(substr(m.patch,instr(m.patch,'.')+1) AS INTEGER)
+                            BETWEEN ruleset.minor_from AND ruleset.minor_to
+                    )
                     OR m.game_duration<?3)",
             params![
                 puuid,
                 lane_score::DERIVATION_VERSION,
                 fallback_seconds,
-                patch_14,
-                patch_15,
-                patch_16,
+                rulesets[0].raw_patch_major,
+                rulesets[0].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[0]),
+                rulesets[1].raw_patch_major,
+                rulesets[1].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[1]),
+                rulesets[2].raw_patch_major,
+                rulesets[2].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[2]),
+                rulesets[3].raw_patch_major,
+                rulesets[3].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[3]),
             ],
         )?)
     }
@@ -118,22 +150,35 @@ impl LaneAnalysisRepository {
             .parameters
             .lane_fallback_ms
             / 1_000;
-        let patch_14 = format!("{}.%", lane_score::COMPATIBLE_RULESETS[0].raw_patch_major);
-        let patch_15 = format!("{}.%", lane_score::COMPATIBLE_RULESETS[1].raw_patch_major);
-        let patch_16 = format!("{}.%", lane_score::COMPATIBLE_RULESETS[3].raw_patch_major);
+        let rulesets = &lane_score::COMPATIBLE_RULESETS;
         Ok(connection.execute(
-            "INSERT OR IGNORE INTO lane_analysis_queue (match_id, puuid, fact_revision)
+            "WITH compatible_rulesets(raw_major,minor_from,minor_to) AS (
+                VALUES (?4,?5,?6), (?7,?8,?9), (?10,?11,?12), (?13,?14,?15)
+             )
+             INSERT OR IGNORE INTO lane_analysis_queue (match_id, puuid, fact_revision)
              SELECT m.match_id, pm.puuid, ?2 FROM matches m JOIN player_matches pm ON pm.match_id = m.match_id
+             JOIN compatible_rulesets ruleset
+               ON CAST(substr(m.patch,1,instr(m.patch,'.')-1) AS INTEGER)=ruleset.raw_major
+              AND CAST(substr(m.patch,instr(m.patch,'.')+1) AS INTEGER)
+                  BETWEEN ruleset.minor_from AND ruleset.minor_to
              WHERE pm.puuid = ?1 AND m.queue_id IN (400, 420, 430, 480, 490)
-               AND m.game_duration >= ?3
-               AND (m.patch LIKE ?4 OR m.patch LIKE ?5 OR m.patch LIKE ?6)",
+               AND m.game_duration >= ?3",
             params![
                 puuid,
                 LANE_FACT_REVISION,
                 fallback_seconds,
-                patch_14,
-                patch_15,
-                patch_16,
+                rulesets[0].raw_patch_major,
+                rulesets[0].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[0]),
+                rulesets[1].raw_patch_major,
+                rulesets[1].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[1]),
+                rulesets[2].raw_patch_major,
+                rulesets[2].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[2]),
+                rulesets[3].raw_patch_major,
+                rulesets[3].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[3]),
             ],
         )?)
     }
@@ -151,13 +196,51 @@ impl LaneAnalysisRepository {
     }
 
     pub fn enqueue_rederivations(connection: &Connection, puuid: &str) -> AppResult<usize> {
+        let rulesets = &lane_score::COMPATIBLE_RULESETS;
         Ok(connection.execute(
-            "INSERT OR IGNORE INTO lane_derivation_queue(match_id,puuid,derivation_version)
+            "WITH compatible_rulesets(raw_major,minor_from,minor_to) AS (
+                VALUES (?4,?5,?6), (?7,?8,?9), (?10,?11,?12), (?13,?14,?15)
+             )
+             INSERT OR IGNORE INTO lane_derivation_queue(match_id,puuid,derivation_version)
              SELECT queue.match_id,queue.puuid,?2 FROM lane_analysis_queue queue
              WHERE queue.puuid=?1 AND queue.fact_revision=?3 AND queue.status='complete'
                AND EXISTS (SELECT 1 FROM match_participants participant WHERE participant.match_id=queue.match_id)
-               AND EXISTS (SELECT 1 FROM lane_timeline_states state WHERE state.match_id=queue.match_id)",
-            params![puuid, lane_score::DERIVATION_VERSION, LANE_FACT_REVISION],
+               AND EXISTS (SELECT 1 FROM lane_timeline_states state WHERE state.match_id=queue.match_id)
+             ON CONFLICT(match_id,puuid,derivation_version) DO UPDATE SET
+                status='pending',attempts=0,last_error=NULL,updated_at=CURRENT_TIMESTAMP
+             WHERE lane_derivation_queue.status='complete'
+               AND EXISTS (
+                 SELECT 1 FROM lane_score_eligibility eligibility
+                 JOIN matches match ON match.match_id=eligibility.match_id
+                 JOIN compatible_rulesets ruleset
+                   ON CAST(substr(match.patch,1,instr(match.patch,'.')-1) AS INTEGER)=ruleset.raw_major
+                  AND CAST(substr(match.patch,instr(match.patch,'.')+1) AS INTEGER)
+                      BETWEEN ruleset.minor_from AND ruleset.minor_to
+                 WHERE eligibility.match_id=lane_derivation_queue.match_id
+                   AND eligibility.perspective_participant_id=(
+                     SELECT participant_id FROM match_participants
+                     WHERE match_id=lane_derivation_queue.match_id AND puuid=lane_derivation_queue.puuid
+                   )
+                   AND eligibility.derivation_version=lane_derivation_queue.derivation_version
+                   AND eligibility.exclusion_reason='RULESET_UNSUPPORTED'
+               )",
+            params![
+                puuid,
+                lane_score::DERIVATION_VERSION,
+                LANE_FACT_REVISION,
+                rulesets[0].raw_patch_major,
+                rulesets[0].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[0]),
+                rulesets[1].raw_patch_major,
+                rulesets[1].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[1]),
+                rulesets[2].raw_patch_major,
+                rulesets[2].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[2]),
+                rulesets[3].raw_patch_major,
+                rulesets[3].raw_patch_minor_from,
+                lane_score::sql_patch_minor_to(&rulesets[3]),
+            ],
         )?)
     }
 
@@ -249,6 +332,7 @@ impl LaneAnalysisRepository {
         participants: &[ParsedParticipant],
         states: &[LaneState],
         events: &[TimelineEvent],
+        item_events: &[ItemTimelineEvent],
     ) -> AppResult<()> {
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         for p in participants {
@@ -270,6 +354,23 @@ impl LaneAnalysisRepository {
             {
                 tx.execute("INSERT OR IGNORE INTO lane_timeline_event_participants(match_id,source_event_id,participant_id,relation) VALUES(?1,?2,?3,?4)",params![match_id,e.source_id,id,relation])?;
             }
+        }
+        for event in item_events {
+            tx.execute(
+                "INSERT OR REPLACE INTO timeline_item_events(
+                    match_id,source_event_id,timestamp_ms,participant_id,event_type,item_id,before_item_id,after_item_id
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    match_id,
+                    event.source_id,
+                    event.timestamp_ms,
+                    event.participant_id,
+                    event.event_type,
+                    event.item_id,
+                    event.before_item_id,
+                    event.after_item_id,
+                ],
+            )?;
         }
         tx.execute("UPDATE lane_analysis_queue SET status='complete',last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE puuid=?1 AND match_id=?2 AND fact_revision=?3",params![puuid,match_id,LANE_FACT_REVISION])?;
         tx.execute(
@@ -388,19 +489,19 @@ impl LaneAnalysisRepository {
                     champion_id,
                     rulesets[0].raw_patch_major,
                     rulesets[0].raw_patch_minor_from,
-                    rulesets[0].raw_patch_minor_to,
+                    lane_score::sql_patch_minor_to(&rulesets[0]),
                     rulesets[0].ruleset_version,
                     rulesets[1].raw_patch_major,
                     rulesets[1].raw_patch_minor_from,
-                    rulesets[1].raw_patch_minor_to,
+                    lane_score::sql_patch_minor_to(&rulesets[1]),
                     rulesets[1].ruleset_version,
                     rulesets[2].raw_patch_major,
                     rulesets[2].raw_patch_minor_from,
-                    rulesets[2].raw_patch_minor_to,
+                    lane_score::sql_patch_minor_to(&rulesets[2]),
                     rulesets[2].ruleset_version,
                     rulesets[3].raw_patch_major,
                     rulesets[3].raw_patch_minor_from,
-                    rulesets[3].raw_patch_minor_to,
+                    lane_score::sql_patch_minor_to(&rulesets[3]),
                     rulesets[3].ruleset_version,
                 ],
                 |row| {
@@ -545,6 +646,7 @@ impl LaneAnalysisRepository {
                 derivation_version,
                 ruleset_version,
                 checkpoints: Vec::new(),
+                trajectory: Vec::new(),
                 combat_clusters: Vec::new(),
                 pressure_events: Vec::new(),
                 objective_events: Vec::new(),
@@ -552,10 +654,38 @@ impl LaneAnalysisRepository {
         }
 
         let mut checkpoints = Vec::new();
+        let mut trajectory = Vec::new();
         let mut combat_clusters = Vec::new();
         if let Some(opponent_id) = opponent_id {
             let mut statement = connection.prepare(
-                "SELECT checkpoint.checkpoint,checkpoint.frame_timestamp_ms,
+                "SELECT local.frame_timestamp_ms,
+                        local.level-opponent.level,local.experience-opponent.experience,
+                        local.lane_minions-opponent.lane_minions,local.total_gold-opponent.total_gold
+                 FROM lane_timeline_states local
+                 JOIN lane_timeline_states opponent
+                   ON opponent.match_id=local.match_id
+                  AND opponent.participant_id=?3
+                  AND opponent.frame_timestamp_ms=local.frame_timestamp_ms
+                 WHERE local.match_id=?1 AND local.participant_id=?2
+                   AND (?4 IS NULL OR local.frame_timestamp_ms<=?4)
+                 ORDER BY local.frame_timestamp_ms",
+            )?;
+            trajectory = statement
+                .query_map(
+                    params![match_id, local_id, opponent_id, cutoff_timestamp_ms],
+                    |row| {
+                        Ok(LaneTrajectoryPointRecord {
+                            timestamp_ms: row.get(0)?,
+                            level_difference: row.get(1)?,
+                            xp_difference: row.get(2)?,
+                            lane_cs_difference: row.get(3)?,
+                            gold_difference: row.get(4)?,
+                        })
+                    },
+                )?
+                .collect::<Result<_, _>>()?;
+            let mut statement = connection.prepare(
+                "SELECT checkpoint.checkpoint,event.timestamp_ms,checkpoint.frame_timestamp_ms,
                         local.level-opponent.level,local.experience-opponent.experience,
                         local.lane_minions-opponent.lane_minions,local.total_gold-opponent.total_gold
                  FROM lane_checkpoints checkpoint
@@ -567,6 +697,9 @@ impl LaneAnalysisRepository {
                    ON opponent.match_id=checkpoint.match_id
                   AND opponent.participant_id=?3
                   AND opponent.frame_timestamp_ms=checkpoint.frame_timestamp_ms
+                 LEFT JOIN lane_timeline_events event
+                   ON event.match_id=checkpoint.match_id
+                  AND event.source_event_id=substr(checkpoint.checkpoint,instr(checkpoint.checkpoint,':')+1)
                  WHERE checkpoint.match_id=?1 AND checkpoint.perspective_participant_id=?2
                    AND checkpoint.derivation_version=?4
                  ORDER BY checkpoint.frame_timestamp_ms,checkpoint.checkpoint",
@@ -582,11 +715,12 @@ impl LaneAnalysisRepository {
                     |row| {
                         Ok(LaneCheckpointRecord {
                             label: row.get(0)?,
-                            timestamp_ms: row.get(1)?,
-                            level_difference: row.get(2)?,
-                            xp_difference: row.get(3)?,
-                            lane_cs_difference: row.get(4)?,
-                            gold_difference: row.get(5)?,
+                            event_timestamp_ms: row.get(1)?,
+                            timestamp_ms: row.get(2)?,
+                            level_difference: row.get(3)?,
+                            xp_difference: row.get(4)?,
+                            lane_cs_difference: row.get(5)?,
+                            gold_difference: row.get(6)?,
                         })
                     },
                 )?
@@ -670,6 +804,7 @@ impl LaneAnalysisRepository {
             derivation_version,
             ruleset_version,
             checkpoints,
+            trajectory,
             combat_clusters,
             pressure_events,
             objective_events,
@@ -1025,6 +1160,123 @@ mod tests {
     }
 
     #[test]
+    fn newly_supported_patch_requeues_a_completed_ruleset_unsupported_v6_derivation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let db = Database::open_in_memory()?;
+        seed(&db)?;
+        let c = db.connection()?;
+        c.execute("UPDATE matches SET patch='16.17' WHERE match_id='M'", [])?;
+        LaneAnalysisRepository::enqueue_eligible(&c, "p")?;
+        c.execute(
+            "UPDATE lane_analysis_queue SET status='complete' WHERE match_id='M' AND puuid='p'",
+            [],
+        )?;
+        c.execute(
+            "INSERT INTO match_participants(match_id,participant_id,puuid,team_id,champion_id,team_position,individual_position)
+             VALUES('M',1,'p',100,1,'TOP','TOP')",
+            [],
+        )?;
+        c.execute(
+            "INSERT INTO lane_timeline_states(match_id,participant_id,frame_timestamp_ms,lane_minions,jungle_minions,total_gold,experience,level)
+             VALUES('M',1,600000,80,0,4000,6000,8)",
+            [],
+        )?;
+        c.execute(
+            "INSERT INTO lane_score_eligibility(match_id,perspective_participant_id,derivation_version,score_ready,exclusion_reason)
+             VALUES('M',1,?1,0,'RULESET_UNSUPPORTED')",
+            [lane_score::DERIVATION_VERSION],
+        )?;
+        c.execute(
+            "INSERT INTO lane_derivation_queue(match_id,puuid,derivation_version,status)
+             VALUES('M','p',?1,'complete')",
+            [lane_score::DERIVATION_VERSION],
+        )?;
+        assert_eq!(LaneAnalysisRepository::enqueue_rederivations(&c, "p")?, 1);
+        assert_eq!(
+            c.query_row(
+                "SELECT status FROM lane_derivation_queue WHERE match_id='M' AND puuid='p' AND derivation_version=?1",
+                [lane_score::DERIVATION_VERSION],
+                |row| row.get::<_, String>(0),
+            )?,
+            "pending"
+        );
+        c.execute(
+            "UPDATE lane_derivation_queue SET status='complete' WHERE match_id='M' AND puuid='p'",
+            [],
+        )?;
+        c.execute("UPDATE matches SET patch='14.21' WHERE match_id='M'", [])?;
+        assert_eq!(LaneAnalysisRepository::enqueue_rederivations(&c, "p")?, 0);
+        assert_eq!(
+            c.query_row(
+                "SELECT status FROM lane_derivation_queue WHERE match_id='M' AND puuid='p' AND derivation_version=?1",
+                [lane_score::DERIVATION_VERSION],
+                |row| row.get::<_, String>(0),
+            )?,
+            "complete"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn detail_keeps_pre_event_time_separate_from_real_source_frame_and_nullable_provenance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let db = Database::open_in_memory()?;
+        seed(&db)?;
+        let c = db.connection()?;
+        c.execute(
+            "INSERT INTO match_participants(match_id,participant_id,puuid,team_id,champion_id,team_position,individual_position)
+             VALUES('M',1,'p',100,1,'TOP','TOP'),('M',2,'opponent',200,2,'TOP','TOP')",
+            [],
+        )?;
+        c.execute(
+            "INSERT INTO lane_score_eligibility(match_id,perspective_participant_id,derivation_version,score_ready)
+             VALUES('M',1,?1,1)",
+            [lane_score::DERIVATION_VERSION],
+        )?;
+        c.execute(
+            "INSERT INTO lane_opponent_mappings(match_id,perspective_participant_id,opponent_participant_id,confidence,derivation_version)
+             VALUES('M',1,2,'HIGH',?1)",
+            [lane_score::DERIVATION_VERSION],
+        )?;
+        for participant_id in [1, 2] {
+            c.execute(
+                "INSERT INTO lane_timeline_states(match_id,participant_id,frame_timestamp_ms,lane_minions,jungle_minions,total_gold,experience,level)
+                 VALUES('M',?1,900329,100,0,6000,8000,10)",
+                [participant_id],
+            )?;
+        }
+        c.execute(
+            "INSERT INTO lane_checkpoints(match_id,perspective_participant_id,derivation_version,checkpoint,frame_timestamp_ms)
+             VALUES('M',1,?1,'PRE_HERALD:herald',900329)",
+            [lane_score::DERIVATION_VERSION],
+        )?;
+        c.execute(
+            "INSERT INTO lane_timeline_events(match_id,source_event_id,timestamp_ms,event_type,monster_type)
+             VALUES('M','herald',927396,'ELITE_MONSTER_KILL','RIFTHERALD')",
+            [],
+        )?;
+        c.execute(
+            "INSERT INTO lane_timeline_events(match_id,source_event_id,timestamp_ms,event_type,lane_type)
+             VALUES('M','pressure-without-owner',850000,'BUILDING_KILL','TOP_LANE')",
+            [],
+        )?;
+
+        let detail = LaneAnalysisRepository::match_lane(&c, "p", "M", true)?.unwrap();
+        let herald = detail
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.label == "PRE_HERALD:herald")
+            .unwrap();
+        assert_eq!(herald.event_timestamp_ms, Some(927396));
+        assert_eq!(herald.timestamp_ms, 900329);
+        assert!(herald.timestamp_ms < herald.event_timestamp_ms.unwrap());
+        assert_eq!(detail.pressure_events.len(), 1);
+        assert_eq!(detail.pressure_events[0].killer_participant_id, None);
+        assert_eq!(detail.pressure_events[0].team_id, None);
+        Ok(())
+    }
+
+    #[test]
     fn normalized_facts_rebuild_the_same_versioned_score() -> Result<(), Box<dyn std::error::Error>>
     {
         use crate::riot::parser::ParsedParticipant;
@@ -1074,6 +1326,24 @@ mod tests {
                 xp: 6_000,
                 level: 8,
             },
+            LaneState {
+                participant_id: 1,
+                timestamp_ms: 615_123,
+                lane_cs: 82,
+                jungle_cs: 0,
+                gold: 4_120,
+                xp: 6_120,
+                level: 8,
+            },
+            LaneState {
+                participant_id: 2,
+                timestamp_ms: 615_123,
+                lane_cs: 82,
+                jungle_cs: 0,
+                gold: 4_120,
+                xp: 6_120,
+                level: 8,
+            },
         ];
         let herald = TimelineEvent {
             source_id: "herald".into(),
@@ -1090,7 +1360,16 @@ mod tests {
             lane_type: None,
             position: Some((5_000, 10_000)),
         };
-        LaneAnalysisRepository::store_facts(&mut c, "p", "M", &roster, &states, &[herald])?;
+        LaneAnalysisRepository::store_facts(&mut c, "p", "M", &roster, &states, &[herald], &[])?;
+        assert_eq!(
+            c.query_row(
+                "SELECT status FROM lane_derivation_queue
+                 WHERE match_id='M' AND puuid='p' AND derivation_version=?1",
+                [lane_score::DERIVATION_VERSION],
+                |row| row.get::<_, String>(0),
+            )?,
+            "pending"
+        );
         let first = LaneAnalysisRepository::rebuild_score(&mut c, "M", "p", true)?.unwrap();
         let second = LaneAnalysisRepository::rebuild_score(&mut c, "M", "p", true)?.unwrap();
         assert_eq!(first, second);
@@ -1126,6 +1405,14 @@ mod tests {
         assert_eq!(diagnostic.opponent_champion_id, Some(2));
         assert_eq!(diagnostic.confidence, "HIGH");
         assert_eq!(diagnostic.score, Some(0.0));
+        assert_eq!(
+            diagnostic
+                .trajectory
+                .iter()
+                .map(|point| point.timestamp_ms)
+                .collect::<Vec<_>>(),
+            vec![600_000, 615_123]
+        );
         assert_eq!(diagnostic.cutoff_timestamp_ms, Some(840_000));
         assert_eq!(
             diagnostic.cutoff_reason.as_deref(),

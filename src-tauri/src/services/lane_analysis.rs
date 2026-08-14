@@ -3,6 +3,7 @@
 //! its own queue so neither older V1 completion nor a restart loses work.
 use crate::db::Database;
 use crate::db::repositories::lane_analysis::LaneAnalysisRepository;
+use crate::domain::items::ItemTimelineEvent;
 use crate::domain::lane_score::{LaneState, TimelineEvent};
 use crate::error::AppResult;
 use crate::riot::client::RiotApiClient;
@@ -63,7 +64,7 @@ pub async fn run(
                 continue;
             }
         };
-        let (states, events) = normalize_timeline(&timeline);
+        let (states, events, item_events) = normalize_timeline(&timeline);
         if states.is_empty() {
             let c = database.connection()?;
             LaneAnalysisRepository::mark_unsupported(
@@ -82,6 +83,7 @@ pub async fn run(
             &parsed.participant_roster,
             &states,
             &events,
+            &item_events,
         )?;
         updated += 1;
         drop(c);
@@ -131,9 +133,12 @@ fn run_pending_derivations(database: &Database, puuid: &str) -> AppResult<u64> {
     }
 }
 
-fn normalize_timeline(response: &TimelineResponse) -> (Vec<LaneState>, Vec<TimelineEvent>) {
+fn normalize_timeline(
+    response: &TimelineResponse,
+) -> (Vec<LaneState>, Vec<TimelineEvent>, Vec<ItemTimelineEvent>) {
     let mut states = Vec::new();
     let mut events = Vec::new();
+    let mut item_events = Vec::new();
     for (frame_index, frame) in response.info.frames.iter().enumerate() {
         for (id, value) in &frame.participant_frames {
             if let Ok(participant_id) = id.parse::<i64>() {
@@ -149,6 +154,23 @@ fn normalize_timeline(response: &TimelineResponse) -> (Vec<LaneState>, Vec<Timel
             }
         }
         for (event_index, event) in frame.events.iter().enumerate() {
+            let source_id = format!("{frame_index}:{event_index}");
+            if matches!(
+                event.event_type.as_str(),
+                "ITEM_PURCHASED" | "ITEM_SOLD" | "ITEM_UNDO" | "ITEM_DESTROYED"
+            ) {
+                if let Some(participant_id) = participant_id(event.participant_id) {
+                    item_events.push(ItemTimelineEvent {
+                        source_id: source_id.clone(),
+                        timestamp_ms: event.timestamp.unwrap_or(frame.timestamp),
+                        participant_id,
+                        event_type: event.event_type.clone(),
+                        item_id: event.item_id,
+                        before_item_id: event.before_id,
+                        after_item_id: event.after_id,
+                    });
+                }
+            }
             if !matches!(
                 event.event_type.as_str(),
                 "CHAMPION_KILL" | "TURRET_PLATE_DESTROYED" | "BUILDING_KILL" | "ELITE_MONSTER_KILL"
@@ -156,7 +178,7 @@ fn normalize_timeline(response: &TimelineResponse) -> (Vec<LaneState>, Vec<Timel
                 continue;
             }
             events.push(TimelineEvent {
-                source_id: format!("{frame_index}:{event_index}"),
+                source_id,
                 timestamp_ms: event.timestamp.unwrap_or(frame.timestamp),
                 kind: event.event_type.clone(),
                 killer: participant_id(event.killer_id),
@@ -179,7 +201,8 @@ fn normalize_timeline(response: &TimelineResponse) -> (Vec<LaneState>, Vec<Timel
     }
     states.sort_by_key(|s| (s.timestamp_ms, s.participant_id));
     events.sort_by_key(|e| (e.timestamp_ms, e.source_id.clone()));
-    (states, events)
+    item_events.sort_by_key(|event| (event.timestamp_ms, event.source_id.clone()));
+    (states, events, item_events)
 }
 
 fn participant_id(value: Option<i64>) -> Option<i64> {
@@ -227,9 +250,10 @@ mod tests {
                 }],
             },
         };
-        let (states, events) = normalize_timeline(&response);
+        let (states, events, item_events) = normalize_timeline(&response);
         assert_eq!(states.len(), 1);
         assert!(events.is_empty());
+        assert!(item_events.is_empty());
         assert_eq!(states[0].lane_cs, 3);
         assert_eq!(states[0].jungle_cs, 4);
     }

@@ -664,8 +664,10 @@ contains:
 - `riot-2024-late-sr-lane-v0` for raw Match-V5 `14.22`–`14.23`;
 - `riot-2025-s1-sr-lane-v0` for raw `15.4`–`15.8`;
 - `riot-2025-s2-sr-lane-v0` for raw `15.9`–`15.23`;
-- `riot-2026-sr-lane-v0` for raw `16.1`–`16.15` (the tracked archive begins
-  at `16.4`, but the semantic 2026 ruleset begins at `16.1`).
+- `riot-2026-sr-lane-v0` for raw `16.1` and later ordinary `16.x` minors while
+  that semantic ruleset is active (the tracked archive begins at `16.4`). A
+  mechanic change closes this open range and adds a newer explicit ruleset;
+  raw Match-V5 provenance remains unchanged.
 
 Raw Match-V5 build families are not Riot's public year-prefixed patch names:
 for example raw `16.x` corresponds to public 2026 `26.x` patches. Each score

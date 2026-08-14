@@ -326,6 +326,17 @@ pub struct LaneMatchSummaryDto {
 #[serde(rename_all = "camelCase")]
 pub struct LaneCheckpointDto {
     pub label: String,
+    pub event_timestamp_ms: Option<i64>,
+    pub timestamp_ms: i64,
+    pub level_difference: i64,
+    pub xp_difference: i64,
+    pub lane_cs_difference: i64,
+    pub gold_difference: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaneTrajectoryPointDto {
     pub timestamp_ms: i64,
     pub level_difference: i64,
     pub xp_difference: i64,
@@ -377,6 +388,7 @@ pub struct LaneMatchDetailDto {
     pub cutoff_timestamp_ms: Option<i64>,
     pub cutoff_reason: Option<String>,
     pub checkpoints: Vec<LaneCheckpointDto>,
+    pub trajectory: Vec<LaneTrajectoryPointDto>,
     pub combat_clusters: Vec<LaneCombatClusterDto>,
     pub pressure_events: Vec<LaneEvidenceEventDto>,
     pub objective_events: Vec<LaneEvidenceEventDto>,

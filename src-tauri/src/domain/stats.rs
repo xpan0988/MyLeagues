@@ -171,7 +171,7 @@ pub fn core_build_usage(samples: &[&TrackedMatchSample]) -> Vec<UsageStats<Vec<i
     usage_groups(
         samples,
         |sample| {
-            let build = CoreBuild::canonical(sample.core_item_ids.clone()).item_ids;
+            let build = CoreBuild::first_three(sample.core_item_ids.clone()).item_ids;
             (!build.is_empty()).then_some(build)
         },
         samples.len() as u64,
@@ -345,7 +345,7 @@ mod tests {
         let builds = core_build_usage(&refs);
         assert_eq!((runes[0].key, runes[0].games), (8010, 2));
         assert_eq!((spells[0].key, spells[0].games), ([4, 12], 2));
-        assert_eq!(builds[0].key, vec![3116, 4633, 6653]);
+        assert_eq!(builds[0].key, vec![4633, 3116, 6653]);
         assert_eq!(builds[0].usage_rate, 100.0);
         assert_eq!(boots_usage(&refs)[0].key, 3047);
         assert_eq!(rune_page_usage(&refs)[0].games, 2);

@@ -279,6 +279,14 @@ pub struct TimelineEventResponse {
     #[serde(default)]
     pub lane_type: Option<String>,
     #[serde(default)]
+    pub participant_id: Option<i64>,
+    #[serde(default)]
+    pub item_id: Option<i64>,
+    #[serde(default)]
+    pub before_id: Option<i64>,
+    #[serde(default)]
+    pub after_id: Option<i64>,
+    #[serde(default)]
     pub position: Option<TimelinePositionResponse>,
 }
 

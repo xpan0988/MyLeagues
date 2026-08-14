@@ -31,9 +31,10 @@ use crate::dto::analytics::{
     ChampionProfileDto, ChampionSummaryDto, ClientStateDto, CoreBuildDto, CoreBuildStatsDto,
     EntityUsageDto, HistoricalSyncDto, HomeDto, LaneCheckpointDto, LaneCombatAttributionDto,
     LaneCombatClusterDto, LaneEvidenceEventDto, LaneMatchDetailDto, LaneMatchSummaryDto,
-    LanePerformanceSummaryDto, LaningAtTenDto, MatchDetailDto, MatchItemDto, MatchQueryDto,
-    MatchSummaryDto, PageDto, PerformanceDto, PreferenceDto, RankDto, ResolvedFilterDto,
-    RunePageDto, RunePageStatsDto, SpellPairStatsDto, SyncStateDto, TrackedOverviewDto,
+    LanePerformanceSummaryDto, LaneTrajectoryPointDto, LaningAtTenDto, MatchDetailDto,
+    MatchItemDto, MatchQueryDto, MatchSummaryDto, PageDto, PerformanceDto, PreferenceDto, RankDto,
+    ResolvedFilterDto, RunePageDto, RunePageStatsDto, SpellPairStatsDto, SyncStateDto,
+    TrackedOverviewDto,
 };
 use crate::error::{AppError, AppResult};
 use crate::services::filters::{FilterResolver, ResolvedFilter};
@@ -915,11 +916,23 @@ fn lane_match_detail_dto(value: LaneMatchRecord, catalog: &StaticCatalog) -> Lan
             .into_iter()
             .map(|checkpoint| LaneCheckpointDto {
                 label: checkpoint.label,
+                event_timestamp_ms: checkpoint.event_timestamp_ms,
                 timestamp_ms: checkpoint.timestamp_ms,
                 level_difference: checkpoint.level_difference,
                 xp_difference: checkpoint.xp_difference,
                 lane_cs_difference: checkpoint.lane_cs_difference,
                 gold_difference: checkpoint.gold_difference,
+            })
+            .collect(),
+        trajectory: value
+            .trajectory
+            .into_iter()
+            .map(|point| LaneTrajectoryPointDto {
+                timestamp_ms: point.timestamp_ms,
+                level_difference: point.level_difference,
+                xp_difference: point.xp_difference,
+                lane_cs_difference: point.lane_cs_difference,
+                gold_difference: point.gold_difference,
             })
             .collect(),
         combat_clusters: value
@@ -1114,7 +1127,7 @@ mod enrichment_tests {
             },
         );
         let summary_build = summary.most_used_core_build.unwrap();
-        assert_eq!(summary_build.items[0].name, "Thornmail");
+        assert_eq!(summary_build.items[0].name, "Sundered Sky");
         assert!(summary_build.items.iter().all(|item| !item.icon.is_empty()));
 
         let profile_build = core_build_stats_dto(

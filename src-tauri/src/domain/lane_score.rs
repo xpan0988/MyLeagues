@@ -17,6 +17,9 @@ pub struct RulesetManifest {
     pub raw_patch_major: i64,
     pub raw_patch_minor_from: i64,
     pub raw_patch_minor_to: i64,
+    /// Active semantic rulesets accept later ordinary minors until a newer
+    /// explicit mechanic-boundary ruleset takes precedence.
+    pub open_ended: bool,
     pub valid_patch_from: &'static str,
     pub valid_patch_to: &'static str,
     pub herald_anchor_supported: bool,
@@ -31,6 +34,7 @@ pub const COMPATIBLE_RULESETS: [RulesetManifest; 4] = [
         raw_patch_major: 14,
         raw_patch_minor_from: 22,
         raw_patch_minor_to: 23,
+        open_ended: false,
         valid_patch_from: "14.22",
         valid_patch_to: "14.23",
         herald_anchor_supported: true,
@@ -43,6 +47,7 @@ pub const COMPATIBLE_RULESETS: [RulesetManifest; 4] = [
         raw_patch_major: 15,
         raw_patch_minor_from: 4,
         raw_patch_minor_to: 8,
+        open_ended: false,
         valid_patch_from: "15.4",
         valid_patch_to: "15.8",
         herald_anchor_supported: true,
@@ -55,6 +60,7 @@ pub const COMPATIBLE_RULESETS: [RulesetManifest; 4] = [
         raw_patch_major: 15,
         raw_patch_minor_from: 9,
         raw_patch_minor_to: 23,
+        open_ended: false,
         valid_patch_from: "15.9",
         valid_patch_to: "15.23",
         herald_anchor_supported: true,
@@ -66,9 +72,10 @@ pub const COMPATIBLE_RULESETS: [RulesetManifest; 4] = [
         ruleset_version: "riot-2026-sr-lane-v0",
         raw_patch_major: 16,
         raw_patch_minor_from: 1,
-        raw_patch_minor_to: 15,
+        raw_patch_minor_to: 16,
+        open_ended: true,
         valid_patch_from: "16.1",
-        valid_patch_to: "16.15",
+        valid_patch_to: "16.x-active",
         herald_anchor_supported: true,
         void_grub_conversion_supported: true,
         maximum_grub_encounters: 1,
@@ -85,12 +92,22 @@ fn parsed_patch(patch: &str) -> Option<(i64, i64)> {
 }
 
 pub fn ruleset_for_patch(patch: &str) -> Option<&'static RulesetManifest> {
+    ruleset_for_patch_in(&COMPATIBLE_RULESETS, patch)
+}
+
+pub fn ruleset_for_patch_in<'a>(
+    rulesets: &'a [RulesetManifest],
+    patch: &str,
+) -> Option<&'a RulesetManifest> {
     let (major, minor) = parsed_patch(patch)?;
-    COMPATIBLE_RULESETS.iter().find(|ruleset| {
-        ruleset.raw_patch_major == major
-            && minor >= ruleset.raw_patch_minor_from
-            && minor <= ruleset.raw_patch_minor_to
-    })
+    rulesets
+        .iter()
+        .filter(|ruleset| {
+            ruleset.raw_patch_major == major
+                && minor >= ruleset.raw_patch_minor_from
+                && (ruleset.open_ended || minor <= ruleset.raw_patch_minor_to)
+        })
+        .max_by_key(|ruleset| ruleset.raw_patch_minor_from)
 }
 
 pub fn compatible_ruleset_versions() -> Vec<&'static str> {
@@ -98,6 +115,14 @@ pub fn compatible_ruleset_versions() -> Vec<&'static str> {
         .iter()
         .map(|ruleset| ruleset.ruleset_version)
         .collect()
+}
+
+pub fn sql_patch_minor_to(ruleset: &RulesetManifest) -> i64 {
+    if ruleset.open_ended {
+        i64::MAX
+    } else {
+        ruleset.raw_patch_minor_to
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExperimentalParameters {
@@ -1169,7 +1194,7 @@ mod tests {
         );
     }
     #[test]
-    fn raw_game_versions_map_to_explicit_historical_rulesets() {
+    fn raw_game_versions_map_to_explicit_historical_and_active_rulesets() {
         assert_eq!(
             ruleset_for_patch("14.22").unwrap().ruleset_version,
             "riot-2024-late-sr-lane-v0"
@@ -1190,8 +1215,42 @@ mod tests {
             ruleset_for_patch("16.15.802.4387").unwrap().ruleset_version,
             "riot-2026-sr-lane-v0"
         );
+        assert_eq!(
+            ruleset_for_patch("16.16.804.9184").unwrap().ruleset_version,
+            "riot-2026-sr-lane-v0"
+        );
+        assert_eq!(
+            ruleset_for_patch("16.17.1.1").unwrap().ruleset_version,
+            "riot-2026-sr-lane-v0"
+        );
+        assert_ne!(
+            ruleset_for_patch("15.23").unwrap().ruleset_version,
+            "riot-2026-sr-lane-v0"
+        );
         assert!(ruleset_for_patch("14.21").is_none());
         assert!(ruleset_for_patch("26.15").is_none());
+    }
+
+    #[test]
+    fn later_mechanic_boundary_overrides_an_open_active_ruleset() {
+        let mut split = COMPATIBLE_RULESETS[3];
+        split.ruleset_version = "riot-2026-sr-lane-v1";
+        split.raw_patch_minor_from = 20;
+        split.raw_patch_minor_to = 20;
+        split.open_ended = true;
+        let rulesets = [COMPATIBLE_RULESETS[3], split];
+        assert_eq!(
+            ruleset_for_patch_in(&rulesets, "16.19")
+                .unwrap()
+                .ruleset_version,
+            "riot-2026-sr-lane-v0"
+        );
+        assert_eq!(
+            ruleset_for_patch_in(&rulesets, "16.20")
+                .unwrap()
+                .ruleset_version,
+            "riot-2026-sr-lane-v1"
+        );
     }
     #[test]
     fn live_horde_monster_type_is_void_grub_evidence() {
@@ -1336,6 +1395,32 @@ mod tests {
     fn strict_pre_event_checkpoint_never_uses_future_state() {
         let states = vec![state(1, 100, 1, 1, 1), state(1, 200, 2, 1, 2)];
         assert_eq!(latest_before(&states, 1, 200).unwrap().timestamp_ms, 100);
+    }
+
+    #[test]
+    fn pre_herald_uses_the_latest_real_state_not_a_nominal_checkpoint() {
+        let states = vec![
+            state(1, 900_000, 1, 1, 1),
+            state(1, 960_000, 2, 1, 2),
+            state(1, 1_020_000, 3, 1, 3),
+        ];
+        assert_eq!(
+            latest_before(&states, 1, 983_000).unwrap().timestamp_ms,
+            960_000
+        );
+    }
+
+    #[test]
+    fn pre_grubs_uses_the_latest_real_state_and_never_a_post_event_frame() {
+        let states = vec![
+            state(1, 300_000, 1, 1, 1),
+            state(1, 345_000, 2, 1, 2),
+            state(1, 360_000, 3, 1, 3),
+        ];
+        assert_eq!(
+            latest_before(&states, 1, 360_000).unwrap().timestamp_ms,
+            345_000
+        );
     }
     #[test]
     fn no_herald_uses_fourteen_minute_fallback() {

@@ -11,7 +11,7 @@ MyLeague is a private local-first Windows/macOS League of Legends launcher and o
 - Normalized SQLite match facts plus rebuildable persistent career/champion aggregate caches.
 - Queue and time filters resolved by Rust: Ranked Solo, Normal, ARAM, All; Current Patch, Current Season, All Tracked.
 - Version-aware Data Dragon metadata cache for champions, items, rune trees, and summoner spells.
-- Full rune-page, keystone, spell-pair, boots, and canonical Core Build Combination analytics.
+- Full rune-page, keystone, spell-pair, boots, and ordered first-three-completed-core-item build-path analytics.
 - Offline browsing when Riot API access or the network is unavailable.
 - Official Riot/League process detection and safe Riot Client launch.
 

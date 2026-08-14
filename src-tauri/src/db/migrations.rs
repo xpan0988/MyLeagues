@@ -64,6 +64,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "lane_combat_contributor_attribution",
         sql: include_str!("../../migrations/0011_lane_combat_contributor_attribution.sql"),
     },
+    Migration {
+        version: 12,
+        name: "timeline_core_item_facts",
+        sql: include_str!("../../migrations/0012_timeline_core_item_facts.sql"),
+    },
 ];
 
 pub fn run(connection: &mut Connection) -> AppResult<()> {
@@ -118,7 +123,7 @@ mod tests {
                 row.get(0)
             })?;
 
-        assert_eq!(applied, 11);
+        assert_eq!(applied, 12);
         Ok(())
     }
 }

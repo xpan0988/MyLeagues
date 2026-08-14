@@ -61,9 +61,17 @@ Item semantics live in one classification module. It uses Data Dragon tags, gold
 
 Data Dragon `runesReforged.json` does not contain the 500x stat-shard catalog used by Match-V5 perk pages. Stat shards therefore use a dedicated backend compatibility table in `domain/static_data.rs`, limited strictly to shard IDs and official static asset URLs. Known shards are enriched before IPC; unknown values use `Unknown Shard (<id>)`. They are never treated as ordinary rune-tree selections.
 
-## Core Build Combination
+## Core Build Paths
 
-V1 reads final inventory only for Core Build and never claims purchase order. It removes empty slots, trinkets, consumables, boots, and obvious components, retains at most three valid completed/core items, sorts IDs into deterministic canonical order, and groups that combination. `[A, B, C]` and `[B, C, A]` are identical. Boots are excluded and analyzed separately. UI displays item tiles without arrows.
+Champion Core Build Paths are the most common ordered first-three completed
+core-item paths across the selected matches; they are not a latest-match view.
+They derive from normalized Timeline `ITEM_PURCHASED`, `ITEM_UNDO`,
+`ITEM_SOLD`, and `ITEM_DESTROYED` facts, never Match-V5 final inventory slots.
+Item metadata excludes low-cost starter items, boots, trinkets, consumables,
+wards, and components.
+An undo removes the matching latest purchase from the path; a later sale keeps
+the historical completion. `[A, B, C]` and `[B, A, C]` are different paths.
+Boots remain a separate final-inventory usage statistic.
 
 ## Runes and filters
 
